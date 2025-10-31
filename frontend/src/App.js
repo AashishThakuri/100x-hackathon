@@ -5,6 +5,7 @@ import './HomePageStyles.css';
 import LandingPage from './LandingPage';
 import HomePage from './HomePage';
 import ChatPage from './ChatPage';
+import BookingPage from './BookingPage';
 
 function App() {
   return (
@@ -13,6 +14,7 @@ function App() {
         <Route path="/" element={<LandingPage />} />
         <Route path="/home" element={<HomePage />} />
         <Route path="/chat" element={<ChatPage />} />
+        <Route path="/booking" element={<BookingPage />} />
       </Routes>
     </Router>
   );
