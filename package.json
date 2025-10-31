@@ -1,0 +1,19 @@
+{
+  "name": "webdev-hackathon",
+  "version": "1.0.0",
+  "description": "Full Stack React + Node.js Application",
+  "scripts": {
+    "install-all": "cd backend && npm install && cd ../frontend && npm install",
+    "backend": "cd backend && npm run dev",
+    "frontend": "cd frontend && npm start",
+    "dev": "concurrently \"npm run backend\" \"npm run frontend\"",
+    "start-backend": "cd backend && npm start",
+    "start-frontend": "cd frontend && npm start"
+  },
+  "keywords": ["fullstack", "react", "nodejs", "express"],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "concurrently": "^8.2.1"
+  }
+}
