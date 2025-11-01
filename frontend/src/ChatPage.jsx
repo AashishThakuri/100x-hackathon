@@ -1,10 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import ReactMarkdown from 'react-markdown';
 import './ChatPageStyles.css';
-
-const genAI = new GoogleGenerativeAI('AIzaSyCgue6RzYRRMr75peOB9aiMKO08-FU3Dzs');
+// All AI calls are made via the backend (/api/chat). No API key on the client.
 
 // Module-level lock to prevent React Strict Mode from causing double-sends
 let isInitialMessageProcessing = false;
@@ -236,6 +234,10 @@ Daily Total: [amount in their currency]
 DAY 2: [Location] - [Main Activity]
 [Same format for each day]
 
+SIDE MISSION
+Between Day [X] and Day [Y], recommend 1-2 local businesses from "List Your Business" that match the location and traveler interests. Format:
+- Business Name | Location | Contact
+
 BUDGET BREAKDOWN
 Accommodation: [amount in their currency] ([X] nights)
 Activities & Tours: [amount in their currency]
@@ -262,6 +264,7 @@ How does this look? Say 'perfect' or 'done' when you're ready for me to analyze 
 6. **COMPLETE RESEARCH**: Know weather, transportation, activities, costs, permits for each location
 7. **NO MARKDOWN**: Never use symbols like *, #, ## - use plain text formatting only
 8. **TOTAL ACCURACY**: All numbers must add up perfectly in their currency
+9. **SIDE MISSIONS**: Include side missions between days (2-3 days apart) recommending local businesses that match the destination and interests. Format: Business Name | Location | Contact
 
 Current conversation state: ${state}`;
 
@@ -290,9 +293,45 @@ Then ask if they'd like to proceed or make changes.`;
   const sendMessage = async () => {
     if (!input.trim()) return;
 
-
     const userMessage = { role: 'user', content: input };
     const userInput = input;
+
+    // Fast-path: if user confirms and we already have a complete plan, skip LLM and go to recommendations
+    const confirmationKeywords = ['done', "let's do this", 'lets do this', 'looks good', 'perfect', 'yes', 'proceed', 'book it', 'go ahead', 'satisfied', 'ready', 'finalize'];
+    const isConfirmation = confirmationKeywords.some(k => userInput.toLowerCase().includes(k));
+    if (isConfirmation && (tripPlan || messages.some(m => m.role === 'assistant' && /day\s*1|itinerary|trip overview/i.test(m.content)))) {
+      const planText = tripPlan || (messages.filter(m => m.role === 'assistant').slice(-1)[0]?.content || '');
+      setMessages(prev => [...prev, userMessage, { role: 'assistant', content: "Perfect! I'm now doing deep analysis of your entire trip plan across the internet - searching Google and up-to-date sources for the best hotels, restaurants and activities. This will take just a moment..." }]);
+      setShowRecommendationCard(true);
+      setInput('');
+      setIsLoading(true);
+      try {
+        const response = await fetch('/api/plan-trip', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            conversationHistory: messages.concat(userMessage).map(msg => ({ role: msg.role, content: msg.content }))
+          })
+        });
+        if (response.ok) {
+          const result = await response.json();
+          setTimeout(() => {
+            navigate('/booking', { state: { tripPlan: planText, realTimeData: result.data, conversationHistory: messages.concat(userMessage) } });
+          }, 1500);
+        } else {
+          setTimeout(() => {
+            navigate('/booking', { state: { tripPlan: planText } });
+          }, 1500);
+        }
+      } catch (e) {
+        setTimeout(() => {
+          navigate('/booking', { state: { tripPlan: planText } });
+        }, 1500);
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
     
     // Trigger animation on first message
     if (!hasStarted) {
@@ -320,22 +359,6 @@ Then ask if they'd like to proceed or make changes.`;
 
   const processMessage = async (userInput, currentMessages) => {
     try {
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
-      
-      // Build conversation history
-      const conversationHistory = currentMessages.slice(0, -1).map(msg => ({
-        role: msg.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: msg.content }]
-      }));
-
-      const chat = model.startChat({
-        history: conversationHistory,
-        generationConfig: {
-          maxOutputTokens: 2000,
-          temperature: 0.75,
-        },
-      });
-
       let systemPrompt = generateSystemPrompt(conversationState);
 
       if (hasRespondedToQuery) {
@@ -381,14 +404,32 @@ Great choice! To plan the perfect trip, I need:
 CRITICAL: Each question MUST be on its own line with a line break after each number. NO PARAGRAPH FORMAT.`;
         }
       }
-      const fullPrompt = `${systemPrompt}\n\n**FORMATTING: NO MARKDOWN SYMBOLS. Use plain text only. When asking questions, put each numbered question on its own separate line with line breaks between them. NEVER put multiple questions in one paragraph.**\n\nUser message: ${userInput}`;
+      const fullPrompt = `${systemPrompt}\n\n**FORMATTING: Use proper markdown formatting with headers, lists, and emphasis. NO EMOJIS. Format responses clearly with:\n- Headers (##) for main sections\n- Bullet points (-) for lists\n- Bold text (**text**) for emphasis\n- Line breaks for readability\n\nWhen asking questions, format like this (each question on its own line with minimal spacing):\n\n1. First question?\n2. Second question?\n3. Third question?\n\nUse minimal gaps between questions - each numbered item should be on its own line with a single line break between them.**`;
 
-      const result = await chat.sendMessage(fullPrompt);
-      const response = await result.response;
-      let text = response.text();
+      // Call backend chat API (proxied via setupProxy to http://localhost:5000)
+      const devKey = process.env.REACT_APP_GEMINI_API_KEY; // Optional: user can set for local dev
+      const headers = { 'Content-Type': 'application/json' };
+      if (devKey) headers['x-gemini-api-key'] = devKey; // Sent to backend; avoid in production
+
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          systemPrompt: fullPrompt,
+          messages: currentMessages,
+          model: 'gemini-2.5-pro',
+          maxTokens: 4000
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Chat API failed with status ${res.status}`);
+      }
+      const data = await res.json();
+      let text = data.text || '';
       
       // Check if AI is creating a trip plan by detecting planning keywords in its response
-      const isPlanningResponse = /^(Perfect!|Great!|Awesome!|Excellent!)\s*(Let me create|I'm planning|Creating|Let me design|I'll create|I'll plan)/i.test(text);
+  const isPlanningResponse = /^(Perfect!|Great!|Awesome!|Excellent!)\s*(Let me create|I'm planning|Creating|Let me design|I'll create|I'll plan)/i.test(text);
       
       // If AI decided to create a plan, show the planning message first, then the plan
       if (isPlanningResponse) {
@@ -446,8 +487,13 @@ CRITICAL: Each question MUST be on its own line with a line break after each num
                               text.toLowerCase().includes('guaranteed') ||
                               text.includes('Rs.') || text.includes('$')) &&
                              text.length > 300; // Ensure it's a substantial response
+
+      // If a full plan is detected, persist it so confirmations can skip the LLM
+      if (hasDetailedPlan) {
+        setTripPlan(text);
+      }
       
-      if (confirmationKeywords.some(keyword => userInputLower.includes(keyword)) && hasDetailedPlan) {
+      if (confirmationKeywords.some(keyword => userInputLower.includes(keyword)) && (hasDetailedPlan || tripPlan)) {
         // Add confirmation message and show recommendation card
         setMessages(prev => [...prev, { 
           role: 'assistant', 
@@ -459,7 +505,7 @@ CRITICAL: Each question MUST be on its own line with a line break after each num
         // Call the new real-time analysis API
         try {
           console.log('Calling API with conversation history:', currentMessages);
-          const response = await fetch('http://localhost:5000/api/plan-trip', {
+          const response = await fetch('/api/plan-trip', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -482,7 +528,7 @@ CRITICAL: Each question MUST be on its own line with a line break after each num
             setTimeout(() => {
               navigate('/booking', { 
                 state: { 
-                  tripPlan: text,
+                  tripPlan: tripPlan || text,
                   realTimeData: result.data,
                   conversationHistory: currentMessages
                 } 
@@ -500,7 +546,7 @@ CRITICAL: Each question MUST be on its own line with a line break after each num
           console.error('Error calling real-time analysis API:', error);
           // Fallback to original flow
           setTimeout(() => {
-            navigate('/booking', { state: { tripPlan: text } });
+              navigate('/booking', { state: { tripPlan: tripPlan || text } });
           }, 2000);
         }
         return;
@@ -578,22 +624,6 @@ CRITICAL: Each question MUST be on its own line with a line break after each num
         )}
 
         <div className={`chat-messages ${!hasStarted ? 'centered' : ''}`}>
-          {/* Show recommendations button if returning from booking */}
-          {preserveChat && returnedTripPlan && (
-            <div className="recommendations-banner">
-              <div className="banner-content">
-                <span className="banner-icon">🎯</span>
-                <span className="banner-text">Your personalized recommendations are ready!</span>
-                <button 
-                  className="view-recommendations-banner-btn"
-                  onClick={() => navigate('/booking', { state: { tripPlan: returnedTripPlan } })}
-                >
-                  View Recommendations
-                </button>
-              </div>
-            </div>
-          )}
-          
           {messages.map((message, index) => (
             <div key={index} className={`message ${message.role}`}>
               <div className="message-avatar">
@@ -634,12 +664,16 @@ CRITICAL: Each question MUST be on its own line with a line break after each num
                   {message.role === 'assistant' ? (
                     <ReactMarkdown 
                       components={{
-                        h1: ({node, ...props}) => <h1 style={{fontSize: '20px', fontWeight: 'bold', margin: '12px 0', color: '#2C3E50'}} {...props} />,
-                        h2: ({node, ...props}) => <h2 style={{fontSize: '18px', fontWeight: 'bold', margin: '10px 0', color: '#E76F51'}} {...props} />,
+                        h1: ({node, ...props}) => <h1 style={{fontSize: '20px', fontWeight: 'bold', margin: '12px 0 6px 0', color: '#2C3E50', lineHeight: '1.3'}} {...props} />,
+                        h2: ({node, ...props}) => <h2 style={{fontSize: '18px', fontWeight: 'bold', margin: '10px 0 4px 0', color: '#E76F51', lineHeight: '1.3'}} {...props} />,
+                        h3: ({node, ...props}) => <h3 style={{fontSize: '16px', fontWeight: '600', margin: '8px 0 2px 0', color: '#34495E', lineHeight: '1.3'}} {...props} />,
                         strong: ({node, ...props}) => <strong style={{fontWeight: '600', color: '#2C3E50'}} {...props} />,
-                        p: ({node, ...props}) => <p style={{margin: '8px 0', lineHeight: '1.6'}} {...props} />,
-                        ul: ({node, ...props}) => <ul style={{margin: '8px 0', paddingLeft: '20px'}} {...props} />,
-                        li: ({node, ...props}) => <li style={{margin: '4px 0', lineHeight: '1.5'}} {...props} />
+                        p: ({node, ...props}) => <p style={{margin: '4px 0', lineHeight: '1.6', color: '#34495E'}} {...props} />,
+                        ul: ({node, ...props}) => <ul style={{margin: '4px 0', paddingLeft: '24px', lineHeight: '1.5'}} {...props} />,
+                        ol: ({node, ...props}) => <ol style={{margin: '4px 0', paddingLeft: '24px', lineHeight: '1.5'}} {...props} />,
+                        li: ({node, ...props}) => <li style={{margin: '2px 0', lineHeight: '1.5', color: '#34495E', paddingBottom: '2px'}} {...props} />,
+                        code: ({node, ...props}) => <code style={{background: '#F5F5F5', padding: '2px 6px', borderRadius: '4px', fontFamily: 'Monaco, monospace', fontSize: '14px', color: '#E76F51'}} {...props} />,
+                        blockquote: ({node, ...props}) => <blockquote style={{borderLeft: '3px solid #E76F51', paddingLeft: '12px', margin: '8px 0', color: '#555', fontStyle: 'italic'}} {...props} />
                       }}
                     >
                       {message.content}
@@ -690,15 +724,36 @@ CRITICAL: Each question MUST be on its own line with a line break after each num
         </div>
 
 
+        {/* Show recommendations button just above input */}
+        {preserveChat && returnedTripPlan && (
+          <div className="recommendations-banner-compact">
+            <div className="banner-content-compact">
+              <span className="banner-text-compact">Your personalized recommendations are ready</span>
+              <button 
+                className="view-recommendations-banner-btn-compact"
+                onClick={() => navigate('/booking', { state: { tripPlan: returnedTripPlan } })}
+              >
+                View Recommendations
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="chat-input-container">
           <div className="chat-input-wrapper">
             <textarea
               className="chat-input"
               placeholder="Describe your dream Nepal trip..."
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                setInput(e.target.value);
+                // Auto-resize textarea
+                e.target.style.height = 'auto';
+                e.target.style.height = Math.min(e.target.scrollHeight, 150) + 'px';
+              }}
               onKeyPress={handleKeyPress}
               rows="1"
+              style={{ minHeight: '40px', maxHeight: '150px', resize: 'none', overflowY: 'auto' }}
             />
             <div className="chat-input-actions">
               <button 

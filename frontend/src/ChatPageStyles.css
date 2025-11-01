@@ -573,18 +573,19 @@
 
 .message-text ul,
 .message-text ol {
-  margin: 8px 0;
+  margin: 2px 0;
   padding-left: 20px;
 }
 
 .message-text li {
-  margin: 4px 0;
-  line-height: 1.5;
+  margin: 1px 0;
+  line-height: 1.4;
+  padding-bottom: 0;
 }
 
 .message-text p {
-  margin: 8px 0;
-  line-height: 1.6;
+  margin: 2px 0;
+  line-height: 1.5;
 }
 
 .message-text code {
@@ -595,49 +596,46 @@
   font-size: 14px;
 }
 
-/* Recommendations Banner */
-.recommendations-banner {
-  background: linear-gradient(135deg, #E76F51, #F4A261);
-  border-radius: 12px;
-  margin-bottom: 20px;
-  padding: 15px 20px;
-  box-shadow: 0 4px 15px rgba(231, 111, 81, 0.2);
-  animation: slideDown 0.5s ease;
+/* Compact Recommendations Banner - positioned above input */
+.recommendations-banner-compact {
+  background: linear-gradient(135deg, #34495E, #2C3E50);
+  border-radius: 8px;
+  margin: 0 20px 12px 20px;
+  padding: 10px 16px;
+  box-shadow: 0 2px 8px rgba(44, 62, 80, 0.15);
+  animation: slideDown 0.3s ease;
 }
 
-.banner-content {
+.banner-content-compact {
   display: flex;
   align-items: center;
-  gap: 15px;
-  color: white;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.banner-icon {
-  font-size: 20px;
-}
-
-.banner-text {
+.banner-text-compact {
   flex: 1;
   font-weight: 500;
-  font-size: 16px;
-}
-
-.view-recommendations-banner-btn {
-  background: rgba(255, 255, 255, 0.2);
-  color: white;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  padding: 8px 16px;
-  border-radius: 8px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.3s ease;
   font-size: 14px;
+  color: white;
 }
 
-.view-recommendations-banner-btn:hover {
-  background: rgba(255, 255, 255, 0.3);
-  border-color: rgba(255, 255, 255, 0.5);
-  transform: translateY(-2px);
+.view-recommendations-banner-btn-compact {
+  background: rgba(255, 255, 255, 0.15);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.view-recommendations-banner-btn-compact:hover {
+  background: rgba(255, 255, 255, 0.25);
+  border-color: rgba(255, 255, 255, 0.4);
 }
 
 @keyframes slideDown {

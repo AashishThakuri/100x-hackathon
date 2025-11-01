@@ -18,6 +18,7 @@ function BookingPage() {
   const [progress, setProgress] = useState(0);
   const [selectedDetail, setSelectedDetail] = useState(null);
   const [showDetailModal, setShowDetailModal] = useState(false);
+  const [sideMissions, setSideMissions] = useState([]);
 
   const tripPlan = location.state?.tripPlan || {};
   const realTimeData = location.state?.realTimeData || null;
@@ -46,27 +47,40 @@ function BookingPage() {
       return;
     }
 
-    // Otherwise, simulate the crawling process
+    // Load recommendations while showing progress
     const steps = [
-      { step: 'searching', message: 'Searching travel websites...', duration: 2000 },
-      { step: 'social', message: 'Crawling social media reviews...', duration: 2500 },
-      { step: 'google', message: 'Analyzing Google reviews...', duration: 2000 },
-      { step: 'filtering', message: 'Filtering best recommendations...', duration: 1500 },
-      { step: 'complete', message: 'Complete!', duration: 500 }
+      { step: 'searching', message: 'Searching travel websites...', progress: 25 },
+      { step: 'google', message: 'Analyzing Google reviews...', progress: 55 },
+      { step: 'filtering', message: 'Filtering best recommendations...', progress: 85 },
+      { step: 'complete', message: 'Complete!', progress: 100 }
     ];
 
+    // Start loading recommendations in parallel
+    const loadPromise = loadRecommendations();
+    
+    // Show progress animation synchronized with loading
     for (let i = 0; i < steps.length; i++) {
       setCurrentStep(steps[i].step);
-      setProgress((i + 1) / steps.length * 100);
+      setProgress(steps[i].progress);
       
-      if (i === steps.length - 1) {
-        // Load data when complete
-        await loadRecommendations();
-        setIsLoading(false);
+      if (i < steps.length - 1) {
+        // Wait progressively less for each step to match actual load time
+        const delay = i === 0 ? 1000 : (i === 1 ? 800 : 600);
+        await new Promise(resolve => setTimeout(resolve, delay));
       }
-      
-      await new Promise(resolve => setTimeout(resolve, steps[i].duration));
     }
+    
+    // Wait for actual data to load (this should complete by now or shortly after)
+    try {
+      await Promise.race([
+        loadPromise,
+        new Promise(resolve => setTimeout(resolve, 1000)) // Max 1s wait after animation
+      ]);
+    } catch (err) {
+      console.error('Error loading recommendations:', err);
+    }
+    
+    setIsLoading(false);
   };
 
   // Helper: call backend JSON
@@ -76,6 +90,68 @@ function BookingPage() {
     const resp = await fetch(fullUrl);
     if (!resp.ok) throw new Error(`Request failed: ${resp.status}`);
     return resp.json();
+  };
+
+  // Parse side missions from trip plan
+  const parseSideMissions = async (planText) => {
+    if (!planText || typeof planText !== 'string') return [];
+    
+    const sideMissions = [];
+    const lines = planText.split('\n');
+    const sideMissionRe = /SIDE\s+MISSION|Side\s+Mission/i;
+    let inSideMission = false;
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      
+      if (sideMissionRe.test(line)) {
+        inSideMission = true;
+        continue;
+      }
+      
+      if (inSideMission) {
+        // Check if line contains business info in format: Business Name | Location | Contact
+        const businessMatch = line.match(/^[-•]\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+)$/);
+        if (businessMatch) {
+          const [, name, location, contact] = businessMatch;
+          sideMissions.push({
+            name: name.trim(),
+            location: location.trim(),
+            contact: contact.trim()
+          });
+        } else if (line.match(/^DAY\s+\d+|BUDGET|WHAT'S|How does/i)) {
+          // End of side mission section
+          break;
+        }
+      }
+    }
+    
+    // If side missions found, fetch matching businesses from API
+    if (sideMissions.length > 0) {
+      const fetchedMissions = [];
+      for (const mission of sideMissions) {
+        try {
+          const response = await apiGet(`/api/businesses?location=${encodeURIComponent(mission.location)}`);
+          if (response.success && response.businesses.length > 0) {
+            // Use the first matching business or the parsed one
+            const business = response.businesses.find(b => 
+              b.name.toLowerCase().includes(mission.name.toLowerCase()) ||
+              mission.name.toLowerCase().includes(b.name.toLowerCase())
+            ) || response.businesses[0];
+            fetchedMissions.push(business);
+          } else {
+            // Use parsed data if API doesn't return match
+            fetchedMissions.push(mission);
+          }
+        } catch (err) {
+          console.warn('Failed to fetch business for side mission:', err);
+          fetchedMissions.push(mission);
+        }
+      }
+      return fetchedMissions;
+    }
+    
+    return [];
   };
 
   // Derive itinerary skeleton from free-form AI trip plan text
@@ -171,13 +247,29 @@ function BookingPage() {
 
       const fetchCategory = async (type) => {
         if (lat == null || lon == null) {
-          console.warn(`Skipping ${type} fetch - no coordinates`);
+          console.warn(`⚠️ Skipping ${type} fetch - no coordinates`);
           return [];
         }
         try {
-          console.log(`Fetching ${type} near ${lat}, ${lon}`);
-          const list = await apiGet(`/api/places/nearby?lat=${lat}&lon=${lon}&type=${type}&radius=4000`);
-          console.log(`Found ${list.results?.length || 0} ${type} results`);
+          console.log(`🔍 Fetching ${type} near ${lat}, ${lon}`);
+          const list = await apiGet(`/api/places/nearby?lat=${lat}&lon=${lon}&type=${type}&radius=10000`);
+          
+          if (!list || !list.success) {
+            console.warn(`⚠️ Failed to fetch ${type}:`, list?.error);
+            return [];
+          }
+          
+          const resultCount = list.results?.length || 0;
+          console.log(`✅ Found ${resultCount} ${type} results`);
+          
+          if (!list.results || list.results.length === 0) {
+            console.warn(`⚠️ No ${type} found. This might indicate:`);
+            console.warn(`   1. GOOGLE_PLACES_API_KEY not configured in backend/.env`);
+            console.warn(`   2. API quota exceeded`);
+            console.warn(`   3. No places of this type in the area`);
+            return [];
+          }
+          
           const items = (list.results || []).map((r) => ({
             name: r.name,
             lat: r.lat,
@@ -194,9 +286,10 @@ function BookingPage() {
             mapLocation: `${r.lat?.toFixed?.(4)}°, ${r.lon?.toFixed?.(4)}°`,
           }));
 
-          // Enrich with detailed reviews and photos
+          // Enrich with detailed reviews and photos (limit to avoid too many API calls)
           const enriched = [];
-          for (let i = 0; i < items.length; i++) {
+          const maxEnrich = Math.min(items.length, 5); // Limit enrichment to top 5
+          for (let i = 0; i < maxEnrich; i++) {
             const it = items[i];
             if (it.place_id) {
               try {
@@ -220,32 +313,40 @@ function BookingPage() {
                   }
                 }
               } catch (err) {
-                console.warn('Failed to fetch details for', it.name, err);
+                console.warn('⚠️ Failed to fetch details for', it.name, err.message);
               }
             }
             enriched.push(it);
           }
+          
+          // Add remaining items without enrichment
+          for (let i = maxEnrich; i < items.length; i++) {
+            enriched.push(items[i]);
+          }
+          
           return enriched;
-        } catch {
+        } catch (err) {
+          console.error(`❌ Error fetching ${type}:`, err.message);
           return [];
         }
       };
 
-      const [hotels, restaurants, agencies, guides] = await Promise.all([
+      const [hotels, restaurants, agencies, guides, attractions] = await Promise.all([
         fetchCategory('hotel'),
         fetchCategory('restaurant'),
         fetchCategory('agency'),
         fetchCategory('guide'),
+        fetchCategory('attraction'),
       ]);
 
       enhancedDays.push({
         ...d,
         geocoded: { lat, lon, display_name },
-        hotels: hotels.slice(0, 10),
-        restaurants: restaurants.slice(0, 10),
-        activities: d.activities || [],
-        agencies: agencies.slice(0, 10),
-        guides: guides.slice(0, 10),
+        hotels: hotels.slice(0, 4),
+        restaurants: restaurants.slice(0, 4),
+        activities: attractions.slice(0, 4),
+        agencies: agencies.slice(0, 4),
+        guides: guides.slice(0, 4),
       });
     }
 
@@ -272,15 +373,15 @@ function BookingPage() {
         restaurants: realTimeData.restaurants || [],
         activities: realTimeData.activities || [],
         budgetSummary: {
-          duration: realTimeData.budget?.summary?.total ? `${Math.floor(realTimeData.budget.summary.total / 100)} Days` : "7 Days",
+          duration: realTimeData.tripAnalysis?.duration ? `${realTimeData.tripAnalysis.duration} Days` : (realTimeData.itinerary?.length ? `${realTimeData.itinerary.length} Days` : "5 Days"),
           travelers: realTimeData.tripAnalysis?.groupSize || 2,
-          accommodation: realTimeData.budget?.breakdown?.accommodation?.total ? `$${realTimeData.budget.breakdown.accommodation.total}` : "Calculating...",
-          activities: realTimeData.budget?.breakdown?.activities?.total ? `$${realTimeData.budget.breakdown.activities.total}` : "Calculating...",
-          meals: realTimeData.budget?.breakdown?.meals?.total ? `$${realTimeData.budget.breakdown.meals.total}` : "Calculating...",
-          transportation: realTimeData.budget?.breakdown?.transportation?.total ? `$${realTimeData.budget.breakdown.transportation.total}` : "Calculating...",
-          permits: realTimeData.budget?.breakdown?.permits?.total ? `$${realTimeData.budget.breakdown.permits.total}` : "Calculating...",
-          guide: realTimeData.budget?.breakdown?.guide?.total ? `$${realTimeData.budget.breakdown.guide.total}` : "Calculating...",
-          total: realTimeData.budget?.summary?.total ? `$${realTimeData.budget.summary.total}` : "Calculating..."
+          accommodation: realTimeData.budget?.breakdown?.accommodation?.total !== undefined ? `$${Math.round(realTimeData.budget.breakdown.accommodation.total)}` : (realTimeData.budget?.breakdown?.accommodation?.perNight && realTimeData.tripAnalysis?.duration ? `$${Math.round(realTimeData.budget.breakdown.accommodation.perNight * realTimeData.tripAnalysis.duration)}` : "Calculating..."),
+          activities: realTimeData.budget?.breakdown?.activities?.total !== undefined ? `$${Math.round(realTimeData.budget.breakdown.activities.total)}` : "Calculating...",
+          meals: realTimeData.budget?.breakdown?.meals?.total !== undefined ? `$${Math.round(realTimeData.budget.breakdown.meals.total)}` : (realTimeData.budget?.breakdown?.meals?.perPersonPerDay && realTimeData.tripAnalysis?.duration && realTimeData.tripAnalysis?.groupSize ? `$${Math.round(realTimeData.budget.breakdown.meals.perPersonPerDay * realTimeData.tripAnalysis.duration * realTimeData.tripAnalysis.groupSize)}` : "Calculating..."),
+          transportation: realTimeData.budget?.breakdown?.transportation?.total !== undefined ? `$${Math.round(realTimeData.budget.breakdown.transportation.total)}` : "Calculating...",
+          permits: realTimeData.budget?.breakdown?.permits?.total !== undefined ? `$${Math.round(realTimeData.budget.breakdown.permits.total)}` : "Calculating...",
+          guide: realTimeData.budget?.breakdown?.guide?.total !== undefined ? `$${Math.round(realTimeData.budget.breakdown.guide.total)}` : (realTimeData.budget?.breakdown?.guide?.perDay && realTimeData.tripAnalysis?.duration ? `$${Math.round(realTimeData.budget.breakdown.guide.perDay * realTimeData.tripAnalysis.duration)}` : "Calculating..."),
+          total: realTimeData.budget?.summary?.total !== undefined ? `$${Math.round(realTimeData.budget.summary.total)}` : (realTimeData.budget?.summary?.perPerson && realTimeData.tripAnalysis?.groupSize ? `$${Math.round(realTimeData.budget.summary.perPerson * realTimeData.tripAnalysis.groupSize)}` : "Calculating...")
         },
         socialInsights: realTimeData.socialInsights || [],
         lastUpdated: realTimeData.lastUpdated || new Date().toISOString(),
@@ -324,6 +425,10 @@ function BookingPage() {
   };
 
   const loadRecommendations = async () => {
+    // Parse side missions from trip plan
+    const missions = await parseSideMissions(tripPlan);
+    setSideMissions(missions);
+    
     // Parse the actual trip plan from AI
     const fromPlan = deriveItineraryFromPlan(tripPlan);
     if (fromPlan.length === 0) {
@@ -358,17 +463,19 @@ function BookingPage() {
       const augmented = await augmentWithOsm(mockData);
       console.log('Real data fetched successfully:', augmented);
       
-      // Aggregate all hotels, restaurants, agencies, guides from all days
+      // Aggregate all hotels, restaurants, agencies, guides, and activities from all days
       const allHotels = [];
       const allRestaurants = [];
       const allAgencies = [];
       const allGuides = [];
+      const allActivities = [];
       
       augmented.tripItinerary.forEach(day => {
         if (day.hotels) allHotels.push(...day.hotels);
         if (day.restaurants) allRestaurants.push(...day.restaurants);
         if (day.agencies) allAgencies.push(...day.agencies);
         if (day.guides) allGuides.push(...day.guides);
+        if (day.activities) allActivities.push(...day.activities);
       });
       
       // Remove duplicates based on name
@@ -376,12 +483,13 @@ function BookingPage() {
       const uniqueRestaurants = Array.from(new Map(allRestaurants.map(r => [r.name, r])).values());
       const uniqueAgencies = Array.from(new Map(allAgencies.map(a => [a.name, a])).values());
       const uniqueGuides = Array.from(new Map(allGuides.map(g => [g.name, g])).values());
+      const uniqueActivities = Array.from(new Map(allActivities.map(a => [a.name || a.activity || a, a])).values());
       
-      augmented.hotels = uniqueHotels.slice(0, 20);
-      augmented.restaurants = uniqueRestaurants.slice(0, 20);
-      augmented.agencies = uniqueAgencies.slice(0, 15);
-      augmented.guides = uniqueGuides.slice(0, 15);
-      augmented.activities = augmented.tripItinerary.flatMap(day => day.activities || []).slice(0, 20);
+      augmented.hotels = uniqueHotels.slice(0, 4);
+      augmented.restaurants = uniqueRestaurants.slice(0, 4);
+      augmented.agencies = uniqueAgencies.slice(0, 4);
+      augmented.guides = uniqueGuides.slice(0, 4);
+      augmented.activities = uniqueActivities.slice(0, 4);
       
       console.log('Aggregated recommendations:', {
         hotels: augmented.hotels.length,
@@ -457,47 +565,63 @@ function BookingPage() {
           Back to Chat
         </button>
         <h1>Your Personalized Recommendations</h1>
-        <div className="recommendation-metadata">
-          <p>Based on real-time AI analysis of Google Places, social media, and travel websites</p>
-          {realTimeData && (
-            <div className="data-confidence">
-              <span className={`confidence-badge ${recommendations.dataConfidence || 'high'}`}>
-                {recommendations.dataConfidence === 'high' ? '🎯 High Confidence' : 
-                 recommendations.dataConfidence === 'medium' ? '⚡ Medium Confidence' : 
-                 '📊 Basic Analysis'}
-              </span>
-              <span className="last-updated">
-                Updated: {recommendations.lastUpdated ? new Date(recommendations.lastUpdated).toLocaleString() : 'Just now'}
-              </span>
-            </div>
-          )}
-          {!realTimeData && (
-            <div className="data-confidence">
-              <span className="confidence-badge fallback">📋 Using Cached Data</span>
-            </div>
-          )}
-        </div>
       </div>
 
       <div className="recommendations-container">
         <div className="recommendations-main">
-        
-        {/* Real-Time Recommendations Header */}
-        <div className="recommendations-header">
-          <h2>🎯 Deep Analysis & Real-Time Recommendations</h2>
-          <p>Based on comprehensive internet analysis of your trip plan including Google, Google Reviews, social media, and travel websites</p>
-        </div>
+
+        {/* Trip Timeline with Side Missions */}
+        {recommendations.tripItinerary && recommendations.tripItinerary.length > 0 && (
+          <section className="recommendation-section">
+            <h2>Trip Itinerary</h2>
+            <div className="trip-timeline">
+              {recommendations.tripItinerary.map((day, index) => (
+                <React.Fragment key={day.day || index}>
+                  <div className="timeline-day">
+                    <div className="day-header">
+                      <div className="day-number">{day.day || index + 1}</div>
+                      <div className="day-info">
+                        <h3>{day.title || `Day ${day.day || index + 1}`}</h3>
+                        <h4>{day.location}</h4>
+                        {day.description && <p className="day-description">{day.description}</p>}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  {/* Side Mission between days (show after Day 1, Day 3, etc.) */}
+                  {sideMissions.length > 0 && index > 0 && index % 2 === 0 && (
+                    <div className="side-mission-card">
+                      <div className="side-mission-header">
+                        <h4>Side Mission</h4>
+                        <p className="side-mission-subtitle">Support local businesses</p>
+                      </div>
+                      <div className="side-mission-businesses">
+                        {sideMissions.slice(0, 2).map((business, idx) => (
+                          <div key={idx} className="side-mission-business">
+                            <div className="business-name">{business.name}</div>
+                            <div className="business-location">{business.location}</div>
+                            <div className="business-contact">{business.contact}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </React.Fragment>
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* Hotels Section */}
         <section className="recommendation-section">
-          <h2>🏨 Recommended Hotels</h2>
+          <h2>Recommended Hotels</h2>
           <p className="section-description">Carefully selected hotels based on your trip destinations, budget, and preferences</p>
           <div className="recommendation-grid">
             {recommendations.hotels.map((hotel, index) => (
               <div key={index} className="recommendation-card">
                 <div className="card-image">
                   <img src={hotel.image || 'https://images.unsplash.com/photo-1566073771259-6a8506099945?w=400&h=250&fit=crop'} alt={hotel.name} />
-                  <div className="location-box">📍 {hotel.mapLocation || hotel.location}</div>
+                  <div className="location-box">{hotel.mapLocation || hotel.location}</div>
                 </div>
                 <div className="card-header">
                   <h3>{hotel.name}</h3>
@@ -508,7 +632,7 @@ function BookingPage() {
                   </div>
                 </div>
                 <div className="card-content">
-                  <p className="location">📍 {hotel.location}</p>
+                  <p className="location">{hotel.location}</p>
                   <p className="price">{hotel.price || 'Contact for pricing'}</p>
                   <div className="amenities">
                     {(hotel.amenities || []).slice(0, 4).map((amenity, i) => (
@@ -516,22 +640,10 @@ function BookingPage() {
                     ))}
                   </div>
                   <div className="contact-info">
-                    <p>📞 {hotel.contact?.phone || 'Contact available'}</p>
-                    <p>✉️ {hotel.contact?.email || 'Email available'}</p>
-                    {hotel.contact?.website && <p>🌐 {hotel.contact.website}</p>}
+                    <p>{hotel.contact?.phone || 'Contact available'}</p>
+                    <p>{hotel.contact?.email || 'Email available'}</p>
+                    {hotel.contact?.website && <p>{hotel.contact.website}</p>}
                   </div>
-                  {hotel.reviews && hotel.reviews.length > 0 && (
-                    <div className="reviews-preview">
-                      <h4>Recent Reviews:</h4>
-                      {hotel.reviews.slice(0, 2).map((review, i) => (
-                        <div key={i} className="review-item">
-                          <div className="review-rating">{'★'.repeat(review.rating)}</div>
-                          <p className="review-text">"{review.text}"</p>
-                          <span className="review-author">- {review.author}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
                 </div>
                 <div className="card-actions">
                   <button className="details-btn" onClick={() => handleViewDetails(hotel, 'hotel')}>
@@ -548,14 +660,14 @@ function BookingPage() {
 
         {/* Places to Visit Section */}
         <section className="recommendation-section">
-          <h2>🏛️ Must-Visit Places</h2>
+          <h2>Must-Visit Places</h2>
           <p className="section-description">Top destinations and attractions based on your trip plan and real-time analysis</p>
           <div className="recommendation-grid">
             {(recommendations.activities || []).map((place, index) => (
               <div key={index} className="recommendation-card">
                 <div className="card-image">
                   <img src={place.image || 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?w=400&h=250&fit=crop'} alt={place.name} />
-                  <div className="location-box">📍 {place.mapLocation || place.location}</div>
+                  <div className="location-box">{place.mapLocation || place.location}</div>
                 </div>
                 <div className="card-header">
                   <h3>{place.name}</h3>
@@ -566,8 +678,8 @@ function BookingPage() {
                   </div>
                 </div>
                 <div className="card-content">
-                  <p className="location">📍 {place.location}</p>
-                  <p className="duration">⏱️ {place.duration || 'Half day'}</p>
+                  <p className="location">{place.location}</p>
+                  <p className="duration">{place.duration || 'Half day'}</p>
                   <p className="price">{place.price || 'Free entry'}</p>
                   <p className="description">{place.description}</p>
                   <div className="amenities">
@@ -591,14 +703,14 @@ function BookingPage() {
 
         {/* Travel Agencies Section */}
         <section className="recommendation-section">
-          <h2>🎯 Recommended Travel Agencies</h2>
+          <h2>Recommended Travel Agencies</h2>
           <p className="section-description">Professional travel agencies with real-time reviews and verified credentials</p>
           <div className="recommendation-grid">
             {recommendations.agencies.map((agency, index) => (
               <div key={index} className="recommendation-card">
                 <div className="card-image">
                   <img src={agency.image || 'https://images.unsplash.com/photo-1517245386807-bb43f82c33c4?w=400&h=250&fit=crop'} alt={agency.name} />
-                  <div className="location-box">📍 {agency.mapLocation || agency.location}</div>
+                  <div className="location-box">{agency.mapLocation || agency.location}</div>
                 </div>
                 <div className="card-header">
                   <h3>{agency.name}</h3>
@@ -609,38 +721,18 @@ function BookingPage() {
                   </div>
                 </div>
                 <div className="card-content">
-                  <p className="location">📍 {agency.location}</p>
-                  <p className="speciality">🎯 {agency.speciality || 'Full service travel agency'}</p>
+                  <p className="location">{agency.location}</p>
+                  <p className="speciality">{agency.speciality || 'Full service travel agency'}</p>
                   <div className="services">
                     {(agency.services || agency.amenities || []).slice(0, 4).map((service, i) => (
                       <span key={i} className="service-tag">{service}</span>
                     ))}
                   </div>
                   <div className="contact-info">
-                    <p>📞 {agency.contact?.phone || 'Contact available'}</p>
-                    <p>✉️ {agency.contact?.email || 'Email available'}</p>
-                    {agency.contact?.website && <p>🌐 {agency.contact.website}</p>}
+                    <p>{agency.contact?.phone || 'Contact available'}</p>
+                    <p>{agency.contact?.email || 'Email available'}</p>
+                    {agency.contact?.website && <p>{agency.contact.website}</p>}
                   </div>
-                  {agency.reviews && agency.reviews.length > 0 && (
-                    <div className="reviews-preview">
-                      <h4>Recent Reviews:</h4>
-                      {agency.reviews.slice(0, 2).map((review, i) => (
-                        <div key={i} className="review-item">
-                          <div className="review-rating">{'★'.repeat(review.rating)}</div>
-                          <p className="review-text">"{review.text}"</p>
-                          <span className="review-author">- {review.author}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {agency.googleReviews && agency.googleReviews.length > 0 && (
-                    <div className="reviews-preview">
-                      <h4>Recent Google Reviews:</h4>
-                      {agency.googleReviews.slice(0, 2).map((review, i) => (
-                        <p key={i} className="review-text">"{review}"</p>
-                      ))}
-                    </div>
-                  )}
                 </div>
                 <div className="card-actions">
                   <button className="details-btn" onClick={() => handleViewDetails(agency, 'agency')}>
@@ -664,7 +756,7 @@ function BookingPage() {
               <div key={index} className="recommendation-card">
                 <div className="card-image">
                   <img src={guide.image || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&h=250&fit=crop'} alt={guide.name} />
-                  <div className="location-box">📍 {guide.mapLocation || guide.location}</div>
+                  <div className="location-box">{guide.mapLocation || guide.location}</div>
                 </div>
                 <div className="card-header">
                   <h3>{guide.name}</h3>
@@ -686,29 +778,9 @@ function BookingPage() {
                     ))}
                   </div>
                   <div className="contact-info">
-                    <p>📞 {guide.contact?.phone || 'Contact available'}</p>
-                    <p>✉️ {guide.contact?.email || 'Email available'}</p>
+                    <p>{guide.contact?.phone || 'Contact available'}</p>
+                    <p>{guide.contact?.email || 'Email available'}</p>
                   </div>
-                  {guide.reviews && guide.reviews.length > 0 && (
-                    <div className="reviews-preview">
-                      <h4>Recent Reviews:</h4>
-                      {guide.reviews.slice(0, 2).map((review, i) => (
-                        <div key={i} className="review-item">
-                          <div className="review-rating">{'★'.repeat(review.rating)}</div>
-                          <p className="review-text">"{review.text}"</p>
-                          <span className="review-author">- {review.author}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {guide.googleReviews && guide.googleReviews.length > 0 && (
-                    <div className="reviews-preview">
-                      <h4>Recent Google Reviews:</h4>
-                      {guide.googleReviews.slice(0, 2).map((review, i) => (
-                        <p key={i} className="review-text">"{review}"</p>
-                      ))}
-                    </div>
-                  )}
                 </div>
                 <div className="card-actions">
                   <button className="details-btn" onClick={() => handleViewDetails(guide, 'guide')}>
@@ -725,14 +797,14 @@ function BookingPage() {
 
         {/* Restaurants Section */}
         <section className="recommendation-section">
-          <h2>🍽️ Recommended Restaurants</h2>
+          <h2>Recommended Restaurants</h2>
           <p className="section-description">Top-rated restaurants and local eateries based on your trip destinations and real-time reviews</p>
           <div className="recommendation-grid">
             {recommendations.restaurants.map((restaurant, index) => (
               <div key={index} className="recommendation-card">
                 <div className="card-image">
                   <img src={restaurant.image || 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=400&h=250&fit=crop'} alt={restaurant.name} />
-                  <div className="location-box">📍 {restaurant.mapLocation || restaurant.location}</div>
+                  <div className="location-box">{restaurant.mapLocation || restaurant.location}</div>
                 </div>
                 <div className="card-header">
                   <h3>{restaurant.name}</h3>
@@ -743,38 +815,18 @@ function BookingPage() {
                   </div>
                 </div>
                 <div className="card-content">
-                  <p className="location">📍 {restaurant.location}</p>
-                  <p className="cuisine">🍴 {restaurant.cuisine || 'Local cuisine'}</p>
-                  <p className="price-range">💰 {restaurant.priceRange || restaurant.price || 'Moderate pricing'}</p>
+                  <p className="location">{restaurant.location}</p>
+                  <p className="cuisine">{restaurant.cuisine || 'Local cuisine'}</p>
+                  <p className="price-range">{restaurant.priceRange || restaurant.price || 'Moderate pricing'}</p>
                   <div className="amenities">
                     {(restaurant.amenities || []).slice(0, 3).map((feature, i) => (
                       <span key={i} className="amenity-tag">{feature}</span>
                     ))}
                   </div>
                   <div className="contact-info">
-                    <p>📞 {restaurant.contact?.phone || 'Contact available'}</p>
-                    <p>✉️ {restaurant.contact?.email || 'Email available'}</p>
+                    <p>{restaurant.contact?.phone || 'Contact available'}</p>
+                    <p>{restaurant.contact?.email || 'Email available'}</p>
                   </div>
-                  {restaurant.reviews && restaurant.reviews.length > 0 && (
-                    <div className="reviews-preview">
-                      <h4>Recent Reviews:</h4>
-                      {restaurant.reviews.slice(0, 2).map((review, i) => (
-                        <div key={i} className="review-item">
-                          <div className="review-rating">{'★'.repeat(review.rating)}</div>
-                          <p className="review-text">"{review.text}"</p>
-                          <span className="review-author">- {review.author}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {restaurant.googleReviews && restaurant.googleReviews.length > 0 && (
-                    <div className="reviews-preview">
-                      <h4>Recent Google Reviews:</h4>
-                      {restaurant.googleReviews.slice(0, 2).map((review, i) => (
-                        <p key={i} className="review-text">"{review}"</p>
-                      ))}
-                    </div>
-                  )}
                 </div>
                 <div className="card-actions">
                   <button className="details-btn" onClick={() => handleViewDetails(restaurant, 'restaurant')}>
@@ -790,58 +842,6 @@ function BookingPage() {
         </section>
         </div>
 
-        {/* Budget Summary Sidebar */}
-        <div className="budget-summary-sidebar">
-          <div className="budget-card">
-            <h3>Trip Summary</h3>
-            <div className="budget-details">
-              <div className="budget-row">
-                <span className="budget-label">Total Duration</span>
-                <span className="budget-value">{recommendations.budgetSummary?.duration}</span>
-              </div>
-              <div className="budget-row">
-                <span className="budget-label">Travelers</span>
-                <span className="budget-value">{recommendations.budgetSummary?.travelers} People</span>
-              </div>
-              <div className="budget-row">
-                <span className="budget-label">Accommodation</span>
-                <span className="budget-value">{recommendations.budgetSummary?.accommodation}</span>
-              </div>
-              <div className="budget-row">
-                <span className="budget-label">Activities & Tours</span>
-                <span className="budget-value">{recommendations.budgetSummary?.activities}</span>
-              </div>
-              <div className="budget-row">
-                <span className="budget-label">Meals</span>
-                <span className="budget-value">{recommendations.budgetSummary?.meals}</span>
-              </div>
-              <div className="budget-row">
-                <span className="budget-label">Transportation</span>
-                <span className="budget-value">{recommendations.budgetSummary?.transportation}</span>
-              </div>
-              <div className="budget-row">
-                <span className="budget-label">Permits</span>
-                <span className="budget-value">{recommendations.budgetSummary?.permits}</span>
-              </div>
-              <div className="budget-row">
-                <span className="budget-label">Guide Services</span>
-                <span className="budget-value">{recommendations.budgetSummary?.guide}</span>
-              </div>
-              <div className="budget-total">
-                <span className="total-label">Total (per person)</span>
-                <span className="total-value">{recommendations.budgetSummary?.total}</span>
-              </div>
-            </div>
-            <div className="budget-actions">
-              <button className="modify-trip-btn">
-                ✏️ Modify Trip
-              </button>
-              <button className="download-pdf-btn">
-                📄 Download PDF
-              </button>
-            </div>
-          </div>
-        </div>
 
         {/* Detail Modal */}
         {showDetailModal && selectedDetail && (
@@ -884,7 +884,7 @@ function BookingPage() {
                     </div>
 
                     <div className="detail-location">
-                      <h4>📍 Location</h4>
+                      <h4>Location</h4>
                       <p>{selectedDetail.location}</p>
                       {selectedDetail.mapLocation && (
                         <p className="coordinates">{selectedDetail.mapLocation}</p>
@@ -893,7 +893,7 @@ function BookingPage() {
 
                     {selectedDetail.contact && (
                       <div className="detail-contact">
-                        <h4>📞 Contact Information</h4>
+                        <h4>Contact Information</h4>
                         <p>Phone: {selectedDetail.contact.phone}</p>
                         <p>Email: {selectedDetail.contact.email}</p>
                         {selectedDetail.contact.website && (
@@ -904,7 +904,7 @@ function BookingPage() {
 
                     {selectedDetail.amenities && (
                       <div className="detail-amenities">
-                        <h4>🏷️ Amenities</h4>
+                        <h4>Amenities</h4>
                         <div className="amenities-grid">
                           {selectedDetail.amenities.map((amenity, index) => (
                             <span key={index} className="amenity-badge">{amenity}</span>
@@ -915,14 +915,14 @@ function BookingPage() {
 
                     {selectedDetail.priceRange && (
                       <div className="detail-price">
-                        <h4>💰 Price Range</h4>
+                        <h4>Price Range</h4>
                         <p>{selectedDetail.priceRange}</p>
                       </div>
                     )}
 
                     {selectedDetail.price && (
                       <div className="detail-price">
-                        <h4>💰 Price</h4>
+                        <h4>Price</h4>
                         <p>{selectedDetail.price}</p>
                       </div>
                     )}
@@ -930,7 +930,7 @@ function BookingPage() {
                 </div>
 
                 <div className="modal-reviews">
-                  <h4>⭐ Recent Reviews</h4>
+                  <h4>Recent Reviews</h4>
                   <div className="reviews-list">
                     {(selectedDetail.reviews?.length ? selectedDetail.reviews : (selectedDetail.googleReviews || [])).map((review, index) => (
                       <div key={index} className="review-item">
