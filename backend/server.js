@@ -22,7 +22,11 @@ if (!process.env.GEMINI_API_KEY) {
   console.warn('[WARN] GEMINI_API_KEY is not set. /api/chat and AI features will fail.');
 }
 if (!process.env.GOOGLE_PLACES_API_KEY) {
-  console.warn('[WARN] GOOGLE_PLACES_API_KEY is not set. Real-time place details and reviews will be empty.');
+  console.error('❌ [CRITICAL] GOOGLE_PLACES_API_KEY is not set!');
+  console.error('   Please add GOOGLE_PLACES_API_KEY to backend/.env file');
+  console.error('   Real-time place details and reviews will be empty.');
+} else {
+  console.log('✅ GOOGLE_PLACES_API_KEY is configured');
 }
 
 // Middleware
@@ -37,6 +41,107 @@ app.get('/', (req, res) => {
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', message: 'Server is running', timestamp: new Date().toISOString() });
+});
+
+// Businesses API - returns businesses from "List Your Business" feature
+app.get('/api/businesses', (req, res) => {
+  try {
+    const { location } = req.query;
+    
+    // Sample businesses data (in production, this would come from a database)
+    const businesses = [
+      {
+        id: 1,
+        name: 'Ama Ko Chiya Pasal',
+        category: 'Restaurant & Cafe',
+        location: 'Thamel, Kathmandu',
+        contact: '+977-1-4441234',
+        email: 'amakochiya@gmail.com'
+      },
+      {
+        id: 2,
+        name: 'Sherpa Guide Service',
+        category: 'Tour & Travel',
+        location: 'Namche Bazaar, Everest Region',
+        contact: '+977-38-540123',
+        email: 'sherpaguide@yahoo.com'
+      },
+      {
+        id: 3,
+        name: 'Magar Handicrafts',
+        category: 'Arts & Crafts',
+        location: 'Pokhara, Kaski',
+        contact: '+977-61-462345',
+        email: 'magarcraft@hotmail.com'
+      },
+      {
+        id: 4,
+        name: 'Gurung Family Lodge',
+        category: 'Accommodation',
+        location: 'Ghandruk, Annapurna Region',
+        contact: '+977-61-460789',
+        email: 'gurungfamily@gmail.com'
+      },
+      {
+        id: 5,
+        name: 'Tharu Organic Farm',
+        category: 'Agriculture & Food',
+        location: 'Chitwan District',
+        contact: '+977-56-420567',
+        email: 'tharuorganic@gmail.com'
+      },
+      {
+        id: 6,
+        name: 'Local Tailor Shop',
+        category: 'Other',
+        location: 'Bhaktapur',
+        contact: '+977-1-6612890',
+        email: 'localtailor@yahoo.com'
+      },
+      {
+        id: 7,
+        name: 'Newari Momo Corner',
+        category: 'Restaurant & Cafe',
+        location: 'Bhaktapur Durbar Square',
+        contact: '+977-1-6615678',
+        email: 'newarimomo@gmail.com'
+      },
+      {
+        id: 8,
+        name: 'Tamang Weaving Center',
+        category: 'Arts & Crafts',
+        location: 'Rasuwa District',
+        contact: '+977-10-560234',
+        email: 'tamangweaving@yahoo.com'
+      }
+    ];
+    
+    // Filter by location if provided
+    let filteredBusinesses = businesses;
+    if (location) {
+      const locationLower = location.toLowerCase();
+      filteredBusinesses = businesses.filter(b => 
+        b.location.toLowerCase().includes(locationLower) ||
+        locationLower.includes(b.location.toLowerCase().split(',')[0])
+      );
+    }
+    
+    // Return minimalistic format: name, location, contact only
+    const minimalBusinesses = filteredBusinesses.map(b => ({
+      name: b.name,
+      location: b.location,
+      contact: b.contact
+    }));
+    
+    res.json({ 
+      success: true, 
+      businesses: minimalBusinesses,
+      count: minimalBusinesses.length
+    });
+  } catch (error) {
+    console.error('Error fetching businesses:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch businesses' });
+  }
 });
 
 // Secure chat endpoint: generates assistant replies server-side (keeps API key private)
@@ -196,14 +301,33 @@ app.get('/api/places/photo', async (req, res) => {
       return res.status(400).json({ error: 'Photo reference is required' });
     }
 
-    const photoUrl = await placesService.getPlacePhoto(photoReference, maxWidth);
-    
-    if (!photoUrl) {
-      return res.status(404).json({ error: 'Photo not found' });
+    if (!process.env.GOOGLE_PLACES_API_KEY) {
+      return res.status(500).json({ error: 'Google Places API key not configured' });
     }
 
-    // Redirect to the actual photo URL
-    res.redirect(photoUrl);
+    // Proxy the image to avoid CORS and 403 errors
+    const axios = require('axios');
+    const photoUrl = `https://maps.googleapis.com/maps/api/place/photo?photoreference=${photoReference}&maxwidth=${maxWidth}&key=${process.env.GOOGLE_PLACES_API_KEY}`;
+    
+    try {
+      const response = await axios.get(photoUrl, {
+        responseType: 'arraybuffer',
+        headers: {
+          'Accept': 'image/*'
+        }
+      });
+
+      // Determine content type from response
+      const contentType = response.headers['content-type'] || 'image/jpeg';
+      
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24 hours
+      res.send(response.data);
+    } catch (proxyError) {
+      console.error('Photo proxy error:', proxyError.message);
+      // Fallback: redirect to the URL (may have CORS/403 issues but better than nothing)
+      res.redirect(photoUrl);
+    }
   } catch (error) {
     console.error('Photo error:', error);
     res.status(500).json({ error: 'Failed to get photo' });
@@ -356,44 +480,129 @@ app.get('/api/maps/geocode', async (req, res) => {
 app.get('/api/places/nearby', async (req, res) => {
   try {
     const { lat, lon } = req.query;
-    let { type, radius = 5000, keyword } = req.query;
+    let { type, radius = 10000, keyword } = req.query;
     
     if (!lat || !lon) {
-      return res.status(400).json({ error: 'Latitude and longitude are required' });
+      return res.json({ success: false, error: 'Latitude and longitude are required', results: [] });
+    }
+
+    // Check if API key is set
+    if (!process.env.GOOGLE_PLACES_API_KEY) {
+      console.error('❌ GOOGLE_PLACES_API_KEY is not set!');
+      return res.json({ 
+        success: false, 
+        error: 'Google Places API key not configured',
+        results: [],
+        message: 'Please configure GOOGLE_PLACES_API_KEY in backend/.env file'
+      });
     }
 
     // Normalize frontend types to Google Places types
     const t = (type || '').toLowerCase();
-    if (t === 'hotel') type = 'lodging';
-    else if (t === 'agency') type = 'travel_agency';
-    else if (t === 'guide') { keyword = keyword || 'tour guide|trekking guide|hiking guide'; type = 'tourist_attraction'; }
-    else if (t === 'attraction' || t === 'place') type = 'tourist_attraction';
+    let places = [];
+    
+    console.log(`🔍 Searching for ${type} near ${lat}, ${lon} with radius ${radius}m`);
 
-    const places = await placesService.searchNearbyPlaces(
-      parseFloat(lat),
-      parseFloat(lon),
-      type,
-      parseInt(radius),
-      keyword
-    );
+    if (t === 'guide') {
+      // Use text search for guides
+      try {
+        // Get location name from reverse geocoding
+        const axios = require('axios');
+        const geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lon}&key=${process.env.GOOGLE_PLACES_API_KEY}`;
+        const geoResponse = await axios.get(geocodeUrl);
+        let locationName = 'Pokhara, Nepal';
+        
+        if (geoResponse.data?.results?.length > 0) {
+          const addressComponents = geoResponse.data.results[0].address_components;
+          const cityComponent = addressComponents.find(c => c.types.includes('locality'));
+          if (cityComponent) {
+            locationName = `${cityComponent.long_name}, Nepal`;
+          }
+        }
+        places = await placesService.searchGuides(locationName, 15);
+      } catch (err) {
+        console.error('❌ Guide search error:', err.message);
+        places = [];
+      }
+    } else {
+      // Map frontend types to Google Places types
+      if (t === 'hotel') type = 'lodging';
+      else if (t === 'agency') type = 'travel_agency';
+      else if (t === 'attraction' || t === 'place') type = 'tourist_attraction';
+      else if (t === 'restaurant') type = 'restaurant';
+
+      // First try nearby search
+      places = await placesService.searchNearbyPlaces(
+        parseFloat(lat),
+        parseFloat(lon),
+        type,
+        parseInt(radius),
+        keyword
+      );
+
+      // If nearby search returns few results, try text search as fallback
+      if (places.length < 5 && type) {
+        console.log(`⚠️ Nearby search returned ${places.length} results, trying text search...`);
+        
+        const axios = require('axios');
+        let locationName = 'Pokhara';
+        try {
+          const geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lon}&key=${process.env.GOOGLE_PLACES_API_KEY}`;
+          const geoResponse = await axios.get(geocodeUrl);
+          if (geoResponse.data?.results?.length > 0) {
+            const addressComponents = geoResponse.data.results[0].address_components;
+            const cityComponent = addressComponents.find(c => 
+              c.types.includes('locality') || c.types.includes('administrative_area_level_2')
+            );
+            if (cityComponent) {
+              locationName = cityComponent.long_name;
+            }
+          }
+        } catch (e) {
+          console.warn('⚠️ Reverse geocoding failed');
+        }
+
+        let query = '';
+        if (type === 'lodging') query = `hotels ${locationName} Nepal`;
+        else if (type === 'restaurant') query = `restaurants ${locationName} Nepal`;
+        else if (type === 'travel_agency') query = `travel agencies ${locationName} Nepal`;
+        else if (type === 'tourist_attraction') query = `tourist attractions ${locationName} Nepal`;
+
+        const textResults = await placesService.textSearch(query, locationName);
+        const existingIds = new Set(places.map(p => p.place_id));
+        const newResults = textResults.filter(p => !existingIds.has(p.place_id));
+        places = [...places, ...newResults];
+        console.log(`✅ After text search: ${places.length} total results`);
+      }
+    }
+
+    const results = places.map(place => ({
+      name: place.name,
+      lat: place.geometry?.location?.lat || place.geometry?.lat,
+      lon: place.geometry?.location?.lng || place.geometry?.lng,
+      place_id: place.place_id,
+      address: place.vicinity || place.formatted_address || place.address || '',
+      rating: place.rating,
+      reviewsCount: place.user_ratings_total,
+      types: place.types,
+      photo_reference: place.photos?.[0]?.photo_reference || place.photo_reference
+    }));
+
+    console.log(`✅ Returning ${results.length} results for ${type || t}`);
 
     res.json({
       success: true,
-      results: places.map(place => ({
-        name: place.name,
-        lat: place.geometry?.location?.lat,
-        lon: place.geometry?.location?.lng,
-        place_id: place.place_id,
-        address: place.vicinity,
-        rating: place.rating,
-        reviewsCount: place.user_ratings_total,
-        types: place.types,
-        photo_reference: place.photos?.[0]?.photo_reference
-      }))
+      results: results,
+      count: results.length
     });
   } catch (error) {
-    console.error('Places nearby error:', error);
-    res.status(500).json({ error: 'Failed to search nearby places' });
+    console.error('❌ Places nearby error:', error);
+    res.json({ 
+      success: false, 
+      error: 'Failed to search nearby places', 
+      details: error.message,
+      results: []
+    });
   }
 });
 

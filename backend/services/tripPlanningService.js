@@ -44,20 +44,28 @@ class TripPlanningService {
         realTimeRecommendations
       );
 
-      // Step 5: Compile final recommendations
+      // Step 5: Compile final recommendations - limit to 4 per category
       const finalRecommendations = {
         tripAnalysis,
         itinerary: preciseItinerary,
         budget: budgetBreakdown,
-        hotels: this.enhanceHotelData(googlePlacesData?.hotels || [], realTimeRecommendations?.hotels || []),
-        restaurants: this.enhanceRestaurantData(googlePlacesData?.restaurants || [], realTimeRecommendations?.restaurants || []),
-        activities: this.enhanceActivityData(googlePlacesData?.attractions || [], realTimeRecommendations?.activities || []),
-        agencies: this.enhanceAgencyData(googlePlacesData?.agencies || [], realTimeRecommendations?.agencies || []),
-        guides: realTimeRecommendations?.guides || [],
+        hotels: this.enhanceHotelData(googlePlacesData?.hotels || [], realTimeRecommendations?.hotels || []).slice(0, 4),
+        restaurants: this.enhanceRestaurantData(googlePlacesData?.restaurants || [], realTimeRecommendations?.restaurants || []).slice(0, 4),
+        activities: this.enhanceActivityData(googlePlacesData?.attractions || [], realTimeRecommendations?.activities || []).slice(0, 4),
+        agencies: this.enhanceAgencyData(googlePlacesData?.agencies || [], realTimeRecommendations?.agencies || []).slice(0, 4),
+        guides: this.enhanceGuideData(googlePlacesData?.guides || [], realTimeRecommendations?.guides || []).slice(0, 4),
         socialInsights: socialMediaInsights,
         lastUpdated: new Date().toISOString(),
         dataConfidence: tripAnalysis.confidence || 'high'
       };
+
+      console.log('✅ Final recommendations compiled:', {
+        hotels: finalRecommendations.hotels.length,
+        restaurants: finalRecommendations.restaurants.length,
+        activities: finalRecommendations.activities.length,
+        agencies: finalRecommendations.agencies.length,
+        guides: finalRecommendations.guides.length
+      });
 
       return finalRecommendations;
     } catch (error) {
@@ -293,7 +301,9 @@ class TripPlanningService {
   // Data enhancement methods
   enhanceHotelData(googleHotels, scrapedHotels) {
     const combined = [...googleHotels, ...scrapedHotels];
-    return combined.slice(0, 10).map(hotel => ({
+    // Remove duplicates and limit to 4
+    const uniqueHotels = Array.from(new Map(combined.map(h => [h.place_id || h.name, h])).values());
+    return uniqueHotels.slice(0, 4).map(hotel => ({
       ...hotel,
       bookingUrl: hotel.website || `https://www.booking.com/search.html?ss=${encodeURIComponent(hotel.name)}`,
       lastPriceUpdate: new Date().toISOString(),
@@ -303,7 +313,8 @@ class TripPlanningService {
 
   enhanceRestaurantData(googleRestaurants, scrapedRestaurants) {
     const combined = [...googleRestaurants, ...scrapedRestaurants];
-    return combined.slice(0, 10).map(restaurant => ({
+    const uniqueRestaurants = Array.from(new Map(combined.map(r => [r.place_id || r.name, r])).values());
+    return uniqueRestaurants.slice(0, 4).map(restaurant => ({
       ...restaurant,
       reservationUrl: restaurant.website || `tel:${restaurant.formatted_phone_number}`,
       lastReviewUpdate: new Date().toISOString(),
@@ -313,7 +324,8 @@ class TripPlanningService {
 
   enhanceActivityData(googleAttractions, scrapedActivities) {
     const combined = [...googleAttractions, ...scrapedActivities];
-    return combined.slice(0, 10).map(activity => ({
+    const uniqueActivities = Array.from(new Map(combined.map(a => [a.place_id || a.name, a])).values());
+    return uniqueActivities.slice(0, 4).map(activity => ({
       ...activity,
       bookingRequired: activity.types?.includes('tourist_attraction'),
       lastUpdate: new Date().toISOString(),
@@ -323,11 +335,26 @@ class TripPlanningService {
 
   enhanceAgencyData(googleAgencies, scrapedAgencies) {
     const combined = [...googleAgencies, ...scrapedAgencies];
-    return combined.slice(0, 5).map(agency => ({
+    const uniqueAgencies = Array.from(new Map(combined.map(a => [a.place_id || a.name, a])).values());
+    return uniqueAgencies.slice(0, 4).map(agency => ({
       ...agency,
       contactVerified: !!agency.formatted_phone_number,
       lastUpdate: new Date().toISOString(),
       verified: !!agency.place_id
+    }));
+  }
+
+  enhanceGuideData(googleGuides, scrapedGuides) {
+    const combined = [...googleGuides, ...scrapedGuides];
+    // Remove duplicates based on place_id or name
+    const uniqueGuides = Array.from(new Map(combined.map(g => [g.place_id || g.name, g])).values());
+    return uniqueGuides.slice(0, 4).map(guide => ({
+      ...guide,
+      contactVerified: !!guide.contact?.phone || !!guide.formatted_phone_number,
+      lastUpdate: new Date().toISOString(),
+      verified: !!guide.place_id,
+      experience: guide.experience || 'Verified Guide',
+      speciality: guide.speciality || guide.types?.join(', ') || 'General Tour Guide'
     }));
   }
 

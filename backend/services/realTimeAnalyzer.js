@@ -153,23 +153,74 @@ class RealTimeAnalyzer {
         this.getRealTimePricing(tripAnalysis.destination, tripAnalysis)
       ]);
 
+      // Check if we have any data at all
+      if (!locationData) {
+        console.error('❌ No location data available');
+        return {
+          hotels: [],
+          restaurants: [],
+          activities: [],
+          agencies: [],
+          guides: [],
+          budgetBreakdown: pricingData || {},
+          itinerary: this.generateBasicItinerary(tripAnalysis),
+          lastUpdated: new Date().toISOString(),
+          dataSource: 'None - API error or no data',
+          confidence: 'low'
+        };
+      }
+
       // Use AI to analyze and rank all collected data
       // Fast mode: return structured, ranked recommendations without LLM
+      // Filter recommendations based on trip plan destination and interests
       if (mode === 'fast') {
         const byRating = (arr) => (arr || []).slice().sort((a,b) => (b.rating||0) - (a.rating||0));
-        const hotels = byRating(locationData?.hotels).slice(0,5);
-        const restaurants = byRating(locationData?.restaurants).slice(0,5);
-        const activities = byRating(locationData?.attractions).slice(0,5);
+        
+        // Filter and limit to 4 recommendations per category based on trip plan
+        const destinationLower = (tripAnalysis.destination || '').toLowerCase();
+        const interests = (tripAnalysis.interests || []).map(i => i.toLowerCase());
+        
+        // Filter hotels based on destination
+        let filteredHotels = (locationData?.hotels || []).filter(h => {
+          const address = (h.formatted_address || h.vicinity || h.address || '').toLowerCase();
+          return !destinationLower || address.includes(destinationLower) || destinationLower.includes(address.split(',')[0]);
+        });
+        const hotels = byRating(filteredHotels).slice(0, 4);
+        
+        // Filter restaurants
+        let filteredRestaurants = (locationData?.restaurants || []).filter(r => {
+          const address = (r.formatted_address || r.vicinity || r.address || '').toLowerCase();
+          return !destinationLower || address.includes(destinationLower) || destinationLower.includes(address.split(',')[0]);
+        });
+        const restaurants = byRating(filteredRestaurants).slice(0, 4);
+        
+        // Filter activities based on interests and destination
+        let filteredActivities = (locationData?.attractions || []).filter(a => {
+          const address = (a.formatted_address || a.vicinity || a.address || '').toLowerCase();
+          const name = (a.name || '').toLowerCase();
+          const types = (a.types || []).join(' ').toLowerCase();
+          const matchesDestination = !destinationLower || address.includes(destinationLower) || destinationLower.includes(address.split(',')[0]);
+          const matchesInterests = interests.length === 0 || interests.some(i => name.includes(i) || types.includes(i));
+          return matchesDestination && matchesInterests;
+        });
+        const activities = byRating(filteredActivities).slice(0, 4);
+        
+        const agencies = byRating(locationData?.agencies || []).slice(0, 4);
+        const guides = byRating(locationData?.guides || []).slice(0, 4);
+        
+        console.log(`✅ Fast mode recommendations: ${hotels.length} hotels, ${restaurants.length} restaurants, ${activities.length} activities, ${agencies.length} agencies, ${guides.length} guides`);
+        
         return {
           hotels,
           restaurants,
           activities,
-          agencies: (locationData?.agencies || []).slice(0,3),
+          agencies,
+          guides,
           budgetBreakdown: pricingData || {},
           itinerary: this.generateBasicItinerary(tripAnalysis),
           lastUpdated: new Date().toISOString(),
           dataSource: 'Google Places (fast mode)',
-          confidence: tripAnalysis.confidence || 'high'
+          confidence: locationData?.hotels?.length > 0 ? (tripAnalysis.confidence || 'high') : 'low'
         };
       }
 
@@ -179,71 +230,151 @@ class RealTimeAnalyzer {
       for (const name of candidates) {
         try { model = this.genAI.getGenerativeModel({ model: name }); break; } catch { continue; }
       }
-      const analysisPrompt = `Create the best recommendations based only on this data.
+      
+      const byRating = (arr) => (arr || []).slice().sort((a,b) => (b.rating||0) - (a.rating||0));
+      
+      const analysisPrompt = `Create the best recommendations based only on this REAL DATA from Google Places API.
 Trip Details: ${JSON.stringify(tripAnalysis)}
 Hotels: ${JSON.stringify((locationData?.hotels || []).slice(0, 10))}
 Restaurants: ${JSON.stringify((locationData?.restaurants || []).slice(0, 10))}
 Attractions: ${JSON.stringify((locationData?.attractions || []).slice(0, 10))}
+Travel Agencies: ${JSON.stringify((locationData?.agencies || []).slice(0, 10))}
+Guides: ${JSON.stringify((locationData?.guides || []).slice(0, 10))}
 Pricing: ${JSON.stringify(pricingData)}
 
-Return JSON with:
-- hotels (top 5), restaurants (top 5), activities (top 5), agencies (3)
-- budgetBreakdown (numbers), itinerary (array), lastUpdated, confidence.
+Return JSON with ONLY the actual data provided (no fake/dummy data):
+- hotels (top 5-10 from the data above)
+- restaurants (top 5-10 from the data above)
+- activities (top 5-10 from attractions above)
+- agencies (top 3-5 from the data above)
+- guides (top 3-5 from the data above)
+- budgetBreakdown (from pricing data)
+- itinerary (array based on trip details)
+- lastUpdated, confidence
+
+IMPORTANT: Only return real places from the data provided, never create fake recommendations.
 `;
       const result = await model.generateContent(analysisPrompt);
       let recommendations;
       try {
-        recommendations = JSON.parse(result.response.text());
+        const responseText = result.response.text().replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        recommendations = JSON.parse(responseText);
+        
+        // Always ensure we use real data from locationData, not AI-generated fake data
+        // Filter to only include places that exist in our real data
+        const hotelNames = new Set((locationData?.hotels || []).map(h => h.name?.toLowerCase()));
+        const restaurantNames = new Set((locationData?.restaurants || []).map(r => r.name?.toLowerCase()));
+        const attractionNames = new Set((locationData?.attractions || []).map(a => a.name?.toLowerCase()));
+        const agencyNames = new Set((locationData?.agencies || []).map(a => a.name?.toLowerCase()));
+        const guideNames = new Set((locationData?.guides || []).map(g => g.name?.toLowerCase()));
+        
+        // Filter recommendations to only include real places
+        if (recommendations.hotels) {
+          recommendations.hotels = recommendations.hotels.filter(h => hotelNames.has(h.name?.toLowerCase()));
+        }
+        if (recommendations.restaurants) {
+          recommendations.restaurants = recommendations.restaurants.filter(r => restaurantNames.has(r.name?.toLowerCase()));
+        }
+        if (recommendations.activities) {
+          recommendations.activities = recommendations.activities.filter(a => attractionNames.has(a.name?.toLowerCase()));
+        }
+        if (recommendations.agencies) {
+          recommendations.agencies = recommendations.agencies.filter(a => agencyNames.has(a.name?.toLowerCase()));
+        }
+        if (recommendations.guides) {
+          recommendations.guides = recommendations.guides.filter(g => guideNames.has(g.name?.toLowerCase()));
+        }
+        
+        // Filter based on trip plan and limit to 4 per category
+        const destinationLower = (tripAnalysis.destination || '').toLowerCase();
+        const interests = (tripAnalysis.interests || []).map(i => i.toLowerCase());
+        
+        // Filter and limit hotels
+        let hotelList = recommendations.hotels?.length > 0 ? recommendations.hotels : byRating(locationData?.hotels || []);
+        hotelList = hotelList.filter(h => {
+          const address = (h.formatted_address || h.vicinity || h.address || '').toLowerCase();
+          return !destinationLower || address.includes(destinationLower) || destinationLower.includes(address.split(',')[0]);
+        }).slice(0, 4);
+        recommendations.hotels = hotelList;
+        
+        // Filter and limit restaurants
+        let restaurantList = recommendations.restaurants?.length > 0 ? recommendations.restaurants : byRating(locationData?.restaurants || []);
+        restaurantList = restaurantList.filter(r => {
+          const address = (r.formatted_address || r.vicinity || r.address || '').toLowerCase();
+          return !destinationLower || address.includes(destinationLower) || destinationLower.includes(address.split(',')[0]);
+        }).slice(0, 4);
+        recommendations.restaurants = restaurantList;
+        
+        // Filter and limit activities based on interests
+        let activityList = recommendations.activities?.length > 0 ? recommendations.activities : byRating(locationData?.attractions || []);
+        activityList = activityList.filter(a => {
+          const address = (a.formatted_address || a.vicinity || a.address || '').toLowerCase();
+          const name = (a.name || '').toLowerCase();
+          const types = (a.types || []).join(' ').toLowerCase();
+          const matchesDestination = !destinationLower || address.includes(destinationLower) || destinationLower.includes(address.split(',')[0]);
+          const matchesInterests = interests.length === 0 || interests.some(i => name.includes(i) || types.includes(i));
+          return matchesDestination && matchesInterests;
+        }).slice(0, 4);
+        recommendations.activities = activityList;
+        
+        recommendations.agencies = (recommendations.agencies?.length > 0 ? recommendations.agencies : byRating(locationData?.agencies || [])).slice(0, 4);
+        recommendations.guides = (recommendations.guides?.length > 0 ? recommendations.guides : byRating(locationData?.guides || [])).slice(0, 4);
       } catch (parseError) {
-        recommendations = this.createFallbackRecommendations(tripAnalysis, {
-          hotels: locationData?.hotels || [],
-          attractions: locationData?.attractions || [],
-          pricing: pricingData
-        });
+        console.warn('AI parsing failed, using fallback with real data:', parseError.message);
+        recommendations = this.createFallbackRecommendations(tripAnalysis, locationData);
       }
 
-      // Enrich with real-time data
+      // Enrich with real-time data from Google Places
       recommendations.lastUpdated = new Date().toISOString();
-      recommendations.dataSource = 'Real-time web scraping + AI analysis';
-      recommendations.confidence = tripAnalysis.confidence || 'high';
+      recommendations.dataSource = 'Google Places + AI analysis';
+      recommendations.confidence = locationData?.hotels?.length > 0 ? (tripAnalysis.confidence || 'high') : 'low';
       
       return recommendations;
     } catch (error) {
       console.error('Error generating comprehensive recommendations:', error);
-      return this.createFallbackRecommendations(tripAnalysis);
+      return this.createFallbackRecommendations(tripAnalysis, locationData);
     }
   }
 
-  // Fallback recommendations if AI analysis fails
-  createFallbackRecommendations(tripAnalysis, scrapedData = {}) {
-    const duration = parseInt(tripAnalysis.duration) || 7;
-    const budget = tripAnalysis.budget || 'mid-range';
+  // Fallback recommendations if AI analysis fails - only use real data, no dummy data
+  createFallbackRecommendations(tripAnalysis, locationData = {}) {
+    const byRating = (arr) => (arr || []).slice().sort((a,b) => (b.rating||0) - (a.rating||0));
+    const destinationLower = (tripAnalysis.destination || '').toLowerCase();
+    const interests = (tripAnalysis.interests || []).map(i => i.toLowerCase());
+    
+    // Filter hotels by destination
+    let filteredHotels = (locationData?.hotels || []).filter(h => {
+      const address = (h.formatted_address || h.vicinity || h.address || '').toLowerCase();
+      return !destinationLower || address.includes(destinationLower) || destinationLower.includes(address.split(',')[0]);
+    });
+    
+    // Filter restaurants by destination
+    let filteredRestaurants = (locationData?.restaurants || []).filter(r => {
+      const address = (r.formatted_address || r.vicinity || r.address || '').toLowerCase();
+      return !destinationLower || address.includes(destinationLower) || destinationLower.includes(address.split(',')[0]);
+    });
+    
+    // Filter activities by destination and interests
+    let filteredActivities = (locationData?.attractions || []).filter(a => {
+      const address = (a.formatted_address || a.vicinity || a.address || '').toLowerCase();
+      const name = (a.name || '').toLowerCase();
+      const types = (a.types || []).join(' ').toLowerCase();
+      const matchesDestination = !destinationLower || address.includes(destinationLower) || destinationLower.includes(address.split(',')[0]);
+      const matchesInterests = interests.length === 0 || interests.some(i => name.includes(i) || types.includes(i));
+      return matchesDestination && matchesInterests;
+    });
     
     return {
-      hotels: scrapedData.hotels?.slice(0, 5) || [],
-      restaurants: [
-        { name: 'Dal Bhat House', cuisine: 'Nepali', rating: 4.5, price: '$10-15' },
-        { name: 'Himalayan Kitchen', cuisine: 'Local', rating: 4.3, price: '$8-12' },
-        { name: 'Mountain View Restaurant', cuisine: 'International', rating: 4.2, price: '$15-25' }
-      ],
-      activities: scrapedData.attractions?.slice(0, 5) || [],
-      agencies: [
-        { name: 'Nepal Adventure Tours', speciality: 'Trekking', contact: { phone: '+977-1-4444444' } },
-        { name: 'Himalayan Expeditions', speciality: 'Mountain Tours', contact: { phone: '+977-1-5555555' } }
-      ],
-      guides: [
-        { name: 'Pemba Sherpa', speciality: 'Everest Region', experience: '15 years' },
-        { name: 'Ang Dorje', speciality: 'Annapurna Circuit', experience: '12 years' }
-      ],
-      budgetBreakdown: {
-        accommodation: `$${30 * duration} (${duration} nights)`,
-        meals: `$${25 * duration} (${duration} days)`,
-        activities: '$200-400',
-        transportation: '$100-200',
-        guide: '$50/day',
-        total: `$${(30 + 25) * duration + 300}`
-      },
-      itinerary: this.generateBasicItinerary(tripAnalysis)
+      hotels: byRating(filteredHotels).slice(0, 4),
+      restaurants: byRating(filteredRestaurants).slice(0, 4),
+      activities: byRating(filteredActivities).slice(0, 4),
+      agencies: byRating(locationData?.agencies || []).slice(0, 4),
+      guides: byRating(locationData?.guides || []).slice(0, 4),
+      budgetBreakdown: {},
+      itinerary: this.generateBasicItinerary(tripAnalysis),
+      lastUpdated: new Date().toISOString(),
+      dataSource: 'Google Places (fallback)',
+      confidence: locationData?.hotels?.length > 0 ? 'medium' : 'low'
     };
   }
 
