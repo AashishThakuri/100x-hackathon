@@ -56,8 +56,9 @@ function HomePage() {
         </div>
         <div className="home-nav-links">
           <Link to="/home">Homepage</Link>
-          <a href="#business">List Your Business</a>
+          <Link to="/business">List Your Business</Link>
           <Link to="/stories">Stories</Link>
+          <Link to="/ad-creator">AI Ad Creator</Link>
         </div>
         <div className="home-nav-profile">
           <div className="profile-dropdown">

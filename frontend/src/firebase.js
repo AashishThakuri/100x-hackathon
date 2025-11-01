@@ -23,4 +23,13 @@ const analytics = getAnalytics(app);
 const auth = getAuth(app);
 const googleProvider = new GoogleAuthProvider();
 
+// Configure Google provider for better popup handling
+googleProvider.setCustomParameters({
+  prompt: 'select_account'
+});
+
+// Add additional scopes if needed
+googleProvider.addScope('profile');
+googleProvider.addScope('email');
+
 export { auth, googleProvider };
