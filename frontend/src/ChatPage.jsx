@@ -1,10 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import ReactMarkdown from 'react-markdown';
 import './ChatPageStyles.css';
-
-const genAI = new GoogleGenerativeAI('');
+// All AI calls are made via the backend (/api/chat). No API key on the client.
 
 // Module-level lock to prevent React Strict Mode from causing double-sends
 let isInitialMessageProcessing = false;
@@ -290,9 +288,45 @@ Then ask if they'd like to proceed or make changes.`;
   const sendMessage = async () => {
     if (!input.trim()) return;
 
-
     const userMessage = { role: 'user', content: input };
     const userInput = input;
+
+    // Fast-path: if user confirms and we already have a complete plan, skip LLM and go to recommendations
+    const confirmationKeywords = ['done', "let's do this", 'lets do this', 'looks good', 'perfect', 'yes', 'proceed', 'book it', 'go ahead', 'satisfied', 'ready', 'finalize'];
+    const isConfirmation = confirmationKeywords.some(k => userInput.toLowerCase().includes(k));
+    if (isConfirmation && (tripPlan || messages.some(m => m.role === 'assistant' && /day\s*1|itinerary|trip overview/i.test(m.content)))) {
+      const planText = tripPlan || (messages.filter(m => m.role === 'assistant').slice(-1)[0]?.content || '');
+      setMessages(prev => [...prev, userMessage, { role: 'assistant', content: "Perfect! I'm now doing deep analysis of your entire trip plan across the internet - searching Google and up-to-date sources for the best hotels, restaurants and activities. This will take just a moment..." }]);
+      setShowRecommendationCard(true);
+      setInput('');
+      setIsLoading(true);
+      try {
+        const response = await fetch('/api/plan-trip', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            conversationHistory: messages.concat(userMessage).map(msg => ({ role: msg.role, content: msg.content }))
+          })
+        });
+        if (response.ok) {
+          const result = await response.json();
+          setTimeout(() => {
+            navigate('/booking', { state: { tripPlan: planText, realTimeData: result.data, conversationHistory: messages.concat(userMessage) } });
+          }, 1500);
+        } else {
+          setTimeout(() => {
+            navigate('/booking', { state: { tripPlan: planText } });
+          }, 1500);
+        }
+      } catch (e) {
+        setTimeout(() => {
+          navigate('/booking', { state: { tripPlan: planText } });
+        }, 1500);
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
     
     // Trigger animation on first message
     if (!hasStarted) {
@@ -320,22 +354,6 @@ Then ask if they'd like to proceed or make changes.`;
 
   const processMessage = async (userInput, currentMessages) => {
     try {
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
-      
-      // Build conversation history
-      const conversationHistory = currentMessages.slice(0, -1).map(msg => ({
-        role: msg.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: msg.content }]
-      }));
-
-      const chat = model.startChat({
-        history: conversationHistory,
-        generationConfig: {
-          maxOutputTokens: 2000,
-          temperature: 0.75,
-        },
-      });
-
       let systemPrompt = generateSystemPrompt(conversationState);
 
       if (hasRespondedToQuery) {
@@ -381,14 +399,32 @@ Great choice! To plan the perfect trip, I need:
 CRITICAL: Each question MUST be on its own line with a line break after each number. NO PARAGRAPH FORMAT.`;
         }
       }
-      const fullPrompt = `${systemPrompt}\n\n**FORMATTING: NO MARKDOWN SYMBOLS. Use plain text only. When asking questions, put each numbered question on its own separate line with line breaks between them. NEVER put multiple questions in one paragraph.**\n\nUser message: ${userInput}`;
+      const fullPrompt = `${systemPrompt}\n\n**FORMATTING: NO MARKDOWN SYMBOLS. Use plain text only. When asking questions, put each numbered question on its own separate line with line breaks between them. NEVER put multiple questions in one paragraph.**`;
 
-      const result = await chat.sendMessage(fullPrompt);
-      const response = await result.response;
-      let text = response.text();
+      // Call backend chat API (proxied via setupProxy to http://localhost:5000)
+      const devKey = process.env.REACT_APP_GEMINI_API_KEY; // Optional: user can set for local dev
+      const headers = { 'Content-Type': 'application/json' };
+      if (devKey) headers['x-gemini-api-key'] = devKey; // Sent to backend; avoid in production
+
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          systemPrompt: fullPrompt,
+          messages: currentMessages,
+          model: 'gemini-2.5-pro',
+          maxTokens: 4000
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Chat API failed with status ${res.status}`);
+      }
+      const data = await res.json();
+      let text = data.text || '';
       
       // Check if AI is creating a trip plan by detecting planning keywords in its response
-      const isPlanningResponse = /^(Perfect!|Great!|Awesome!|Excellent!)\s*(Let me create|I'm planning|Creating|Let me design|I'll create|I'll plan)/i.test(text);
+  const isPlanningResponse = /^(Perfect!|Great!|Awesome!|Excellent!)\s*(Let me create|I'm planning|Creating|Let me design|I'll create|I'll plan)/i.test(text);
       
       // If AI decided to create a plan, show the planning message first, then the plan
       if (isPlanningResponse) {
@@ -446,8 +482,13 @@ CRITICAL: Each question MUST be on its own line with a line break after each num
                               text.toLowerCase().includes('guaranteed') ||
                               text.includes('Rs.') || text.includes('$')) &&
                              text.length > 300; // Ensure it's a substantial response
+
+      // If a full plan is detected, persist it so confirmations can skip the LLM
+      if (hasDetailedPlan) {
+        setTripPlan(text);
+      }
       
-      if (confirmationKeywords.some(keyword => userInputLower.includes(keyword)) && hasDetailedPlan) {
+      if (confirmationKeywords.some(keyword => userInputLower.includes(keyword)) && (hasDetailedPlan || tripPlan)) {
         // Add confirmation message and show recommendation card
         setMessages(prev => [...prev, { 
           role: 'assistant', 
@@ -459,7 +500,7 @@ CRITICAL: Each question MUST be on its own line with a line break after each num
         // Call the new real-time analysis API
         try {
           console.log('Calling API with conversation history:', currentMessages);
-          const response = await fetch('http://localhost:5000/api/plan-trip', {
+          const response = await fetch('/api/plan-trip', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -482,7 +523,7 @@ CRITICAL: Each question MUST be on its own line with a line break after each num
             setTimeout(() => {
               navigate('/booking', { 
                 state: { 
-                  tripPlan: text,
+                  tripPlan: tripPlan || text,
                   realTimeData: result.data,
                   conversationHistory: currentMessages
                 } 
@@ -500,7 +541,7 @@ CRITICAL: Each question MUST be on its own line with a line break after each num
           console.error('Error calling real-time analysis API:', error);
           // Fallback to original flow
           setTimeout(() => {
-            navigate('/booking', { state: { tripPlan: text } });
+              navigate('/booking', { state: { tripPlan: tripPlan || text } });
           }, 2000);
         }
         return;

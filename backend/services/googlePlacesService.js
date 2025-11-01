@@ -67,8 +67,8 @@ class GooglePlacesService {
   }
 
   // Search for nearby places
-  async searchNearbyPlaces(lat, lng, type, radius = 5000) {
-    const cacheKey = `nearby_${lat}_${lng}_${type}_${radius}`;
+  async searchNearbyPlaces(lat, lng, type, radius = 5000, keyword = undefined) {
+    const cacheKey = `nearby_${lat}_${lng}_${type || 'any'}_${radius}_${keyword || 'none'}`;
     
     if (this.cache.has(cacheKey)) {
       const cached = this.cache.get(cacheKey);
@@ -78,14 +78,15 @@ class GooglePlacesService {
     }
 
     try {
-      const response = await axios.get(`${this.baseUrl}/nearbysearch/json`, {
-        params: {
-          location: `${lat},${lng}`,
-          radius: radius,
-          type: type,
-          key: this.apiKey
-        }
-      });
+      const params = {
+        location: `${lat},${lng}`,
+        radius: radius,
+        key: this.apiKey
+      };
+      if (type) params.type = type;
+      if (keyword) params.keyword = keyword;
+
+      const response = await axios.get(`${this.baseUrl}/nearbysearch/json`, { params });
 
       if (response.data.status === 'OK') {
         const places = response.data.results.map(place => ({
@@ -109,9 +110,10 @@ class GooglePlacesService {
 
         return places;
       }
+      console.warn('Nearby search non-OK:', response.data.status, response.data.error_message);
       return [];
     } catch (error) {
-      console.error('Nearby search error:', error);
+      console.error('Nearby search error:', error?.response?.data || error.message);
       return [];
     }
   }
@@ -177,32 +179,25 @@ class GooglePlacesService {
       // Search for nearby places
       const places = await this.searchNearbyPlaces(geocode.lat, geocode.lng, type);
       
-      // Get detailed information for top places
-      const detailedPlaces = [];
+      // Get detailed information for top places (parallel for speed)
       const limitedPlaces = places.slice(0, limit);
-      
-      for (const place of limitedPlaces) {
-        const details = await this.getPlaceDetails(place.place_id);
-        if (details) {
-          const enhancedPlace = {
-            ...place,
-            ...details,
-            photos: details.photos ? details.photos.map(photo => 
-              this.getPlacePhoto(photo.photo_reference)
-            ) : [],
-            reviews: details.reviews || [],
-            contact: {
-              phone: details.formatted_phone_number || '',
-              website: details.website || '',
-              address: details.formatted_address || place.vicinity
-            }
-          };
-          detailedPlaces.push(enhancedPlace);
-        }
-        
-        // Add small delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
+      const detailsArray = await Promise.all(limitedPlaces.map(p => this.getPlaceDetails(p.place_id)));
+
+      const detailedPlaces = limitedPlaces.map((place, idx) => {
+        const details = detailsArray[idx];
+        if (!details) return null;
+        return {
+          ...place,
+          ...details,
+          photos: details.photos ? details.photos.map(photo => this.getPlacePhoto(photo.photo_reference)) : [],
+          reviews: details.reviews || [],
+          contact: {
+            phone: details.formatted_phone_number || '',
+            website: details.website || '',
+            address: details.formatted_address || place.vicinity
+          }
+        };
+      }).filter(Boolean);
 
       return detailedPlaces;
     } catch (error) {
@@ -212,16 +207,18 @@ class GooglePlacesService {
   }
 
   // Get comprehensive location data
-  async getLocationData(location) {
+  async getLocationData(location, options = {}) {
     try {
+      const mode = options.mode || 'fast';
+      const limits = mode === 'fast' ? { hotels: 5, restaurants: 5, attractions: 5, agencies: 3 } : { hotels: 8, restaurants: 8, attractions: 8, agencies: 5 };
       const geocode = await this.geocodeLocation(location);
       if (!geocode) return null;
 
       const [hotels, restaurants, attractions, agencies] = await Promise.all([
-        this.searchPlacesByType(location, 'lodging', 8),
-        this.searchPlacesByType(location, 'restaurant', 8),
-        this.searchPlacesByType(location, 'tourist_attraction', 8),
-        this.searchPlacesByType(location, 'travel_agency', 5)
+        this.searchPlacesByType(location, 'lodging', limits.hotels),
+        this.searchPlacesByType(location, 'restaurant', limits.restaurants),
+        this.searchPlacesByType(location, 'tourist_attraction', limits.attractions),
+        this.searchPlacesByType(location, 'travel_agency', limits.agencies)
       ]);
 
       return {

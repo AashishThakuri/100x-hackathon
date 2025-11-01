@@ -11,7 +11,7 @@ class TripPlanningService {
   }
 
   // Main method to process tourist responses and generate comprehensive plan
-  async processTouristResponses(conversationHistory) {
+  async processTouristResponses(conversationHistory, options = {}) {
     try {
       console.log('Processing tourist responses...');
       
@@ -24,13 +24,8 @@ class TripPlanningService {
       console.log('Trip analysis:', tripAnalysis);
 
       // Step 2: Get real-time data from Google Places and Google Reviews ONLY
-      const [
-        googlePlacesData,
-        realTimeRecommendations
-      ] = await Promise.all([
-        this.placesService.getLocationData(tripAnalysis.destination),
-        this.analyzer.generateComprehensiveRecommendations(tripAnalysis)
-      ]);
+      const googlePlacesData = await this.placesService.getLocationData(tripAnalysis.destination, options);
+      const realTimeRecommendations = await this.analyzer.generateComprehensiveRecommendations(tripAnalysis, options, googlePlacesData);
       
       // Skip social media scraping (Twitter, etc.) - using Google data only
       const socialMediaInsights = [];
@@ -74,7 +69,11 @@ class TripPlanningService {
   // Generate precise day-by-day itinerary
   async generatePreciseItinerary(tripAnalysis, placesData, recommendations) {
     try {
-      const model = this.genAI.getGenerativeModel({ model: 'gemini-2.5-pro' });
+      let model;
+      const candidates = ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash-exp', 'gemini-1.5-flash'];
+      for (const name of candidates) {
+        try { model = this.genAI.getGenerativeModel({ model: name }); break; } catch { continue; }
+      }
       
       const itineraryPrompt = `
         Create a precise, day-by-day itinerary for this trip:

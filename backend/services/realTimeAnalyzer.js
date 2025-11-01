@@ -1,11 +1,11 @@
 const axios = require('axios');
-const cheerio = require('cheerio');
-const puppeteer = require('puppeteer');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const GooglePlacesService = require('./googlePlacesService');
 
 class RealTimeAnalyzer {
   constructor() {
     this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    this.placesService = new GooglePlacesService();
     this.cache = new Map();
     this.cacheTimeout = 30 * 60 * 1000; // 30 minutes
   }
@@ -13,7 +13,11 @@ class RealTimeAnalyzer {
   // Analyze tourist responses and create precise trip plan
   async analyzeTouristResponses(conversationHistory) {
     try {
-      const model = this.genAI.getGenerativeModel({ model: 'gemini-2.5-pro' });
+      let model;
+      const candidates = ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash-exp', 'gemini-1.5-flash'];
+      for (const name of candidates) {
+        try { model = this.genAI.getGenerativeModel({ model: name }); break; } catch { continue; }
+      }
       
       const analysisPrompt = `
         Analyze this conversation history and extract detailed trip planning information:
@@ -50,181 +54,7 @@ class RealTimeAnalyzer {
     }
   }
 
-  // Scrape Google for real-time hotel data
-  async scrapeGoogleHotels(location, checkIn, checkOut, guests = 2) {
-    const cacheKey = `hotels_${location}_${checkIn}_${checkOut}_${guests}`;
-    
-    if (this.cache.has(cacheKey)) {
-      const cached = this.cache.get(cacheKey);
-      if (Date.now() - cached.timestamp < this.cacheTimeout) {
-        return cached.data;
-      }
-    }
-
-    try {
-      const browser = await puppeteer.launch({ 
-        headless: 'new',
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-      });
-      const page = await browser.newPage();
-      
-      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
-      
-      const searchUrl = `https://www.google.com/travel/hotels/${encodeURIComponent(location)}?q=${encodeURIComponent(location)}&g2lb=2502548%2C2503771%2C2503781%2C4258168%2C4270442%2C4284970%2C4291517%2C4597339%2C4757164%2C4814050%2C4850738%2C4864715%2C4874190%2C4886480%2C4893075%2C4924070%2C4965990%2C4985711%2C4990494%2C72248281%2C72271797%2C72272556%2C72281254&hl=en-US&gl=us&cs=1&ssta=1&ts=CAESCAoCCAMKAggDEAAaXAoiEiAyJTB4Mzk5NTNlNmQ5NzBkOGI5OToweDc0ZjRkNzI4ZjE4ZjY4ZjkSGhIUCgcI5w8QDBgYEgcI5w8QDBgZGAEyAhAAKhQKBwjnDxAMGBgSBwjnDxAMGBkYATICEAA&rp=EAI&ictx=1&ved=0CAAQ5JsGahcKEwjY-aGX8ZmBAxUAAAAAHQAAAAAQAg`;
-      
-      await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-      await page.waitForTimeout(3000);
-
-      const hotels = await page.evaluate(() => {
-        const hotelElements = document.querySelectorAll('[data-ved] [role="button"]');
-        const results = [];
-        
-        hotelElements.forEach((element, index) => {
-          if (index >= 20) return; // Limit to 20 results
-          
-          const nameEl = element.querySelector('h3, h2, [data-ved] span');
-          const ratingEl = element.querySelector('[aria-label*="star"]');
-          const priceEl = element.querySelector('[aria-label*="$"], [aria-label*="USD"]');
-          const imageEl = element.querySelector('img');
-          
-          if (nameEl) {
-            results.push({
-              name: nameEl.textContent?.trim() || '',
-              rating: ratingEl ? parseFloat(ratingEl.textContent) || null : null,
-              price: priceEl ? priceEl.textContent?.trim() || '' : '',
-              image: imageEl ? imageEl.src : '',
-              source: 'Google Hotels'
-            });
-          }
-        });
-        
-        return results;
-      });
-
-      await browser.close();
-      
-      // Cache the results
-      this.cache.set(cacheKey, {
-        data: hotels,
-        timestamp: Date.now()
-      });
-      
-      return hotels;
-    } catch (error) {
-      console.error('Error scraping Google Hotels:', error);
-      return [];
-    }
-  }
-
-  // Scrape TripAdvisor for reviews and recommendations
-  async scrapeTripAdvisor(location, type = 'hotels') {
-    const cacheKey = `tripadvisor_${location}_${type}`;
-    
-    if (this.cache.has(cacheKey)) {
-      const cached = this.cache.get(cacheKey);
-      if (Date.now() - cached.timestamp < this.cacheTimeout) {
-        return cached.data;
-      }
-    }
-
-    try {
-      const searchUrl = `https://www.tripadvisor.com/Search?q=${encodeURIComponent(location + ' ' + type)}`;
-      
-      const response = await axios.get(searchUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-      });
-
-      const $ = cheerio.load(response.data);
-      const results = [];
-
-      $('.result-title').each((index, element) => {
-        if (index >= 15) return;
-        
-        const $el = $(element);
-        const name = $el.text().trim();
-        const link = $el.find('a').attr('href');
-        const rating = $el.closest('.result').find('.ui_bubble_rating').attr('alt');
-        
-        if (name) {
-          results.push({
-            name,
-            link: link ? `https://www.tripadvisor.com${link}` : '',
-            rating: rating ? parseFloat(rating.match(/[\d.]+/)?.[0]) : null,
-            source: 'TripAdvisor'
-          });
-        }
-      });
-
-      // Cache the results
-      this.cache.set(cacheKey, {
-        data: results,
-        timestamp: Date.now()
-      });
-      
-      return results;
-    } catch (error) {
-      console.error('Error scraping TripAdvisor:', error);
-      return [];
-    }
-  }
-
-  // Scrape social media mentions and reviews
-  async scrapeSocialMediaReviews(location, businessName) {
-    try {
-      const browser = await puppeteer.launch({ 
-        headless: 'new',
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-      });
-      const page = await browser.newPage();
-      
-      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
-      
-      // Search Twitter/X for recent mentions
-      const twitterUrl = `https://twitter.com/search?q=${encodeURIComponent(businessName + ' ' + location)}&src=typed_query&f=live`;
-      
-      const reviews = [];
-      
-      try {
-        await page.goto(twitterUrl, { waitUntil: 'networkidle2', timeout: 15000 });
-        await page.waitForTimeout(2000);
-
-        const tweets = await page.evaluate(() => {
-          const tweetElements = document.querySelectorAll('[data-testid="tweet"]');
-          const results = [];
-          
-          tweetElements.forEach((element, index) => {
-            if (index >= 10) return;
-            
-            const textEl = element.querySelector('[data-testid="tweetText"]');
-            const authorEl = element.querySelector('[data-testid="User-Name"]');
-            
-            if (textEl && textEl.textContent.length > 20) {
-              results.push({
-                text: textEl.textContent.trim(),
-                author: authorEl ? authorEl.textContent.trim() : 'Anonymous',
-                platform: 'Twitter/X',
-                timestamp: new Date().toISOString()
-              });
-            }
-          });
-          
-          return results;
-        });
-        
-        reviews.push(...tweets);
-      } catch (error) {
-        console.log('Twitter scraping failed, continuing...');
-      }
-
-      await browser.close();
-      return reviews;
-    } catch (error) {
-      console.error('Error scraping social media:', error);
-      return [];
-    }
-  }
+  // NOTE: Removed all scraping. We now use official Google Places API data via GooglePlacesService.
 
   // Get real-time pricing from multiple sources
   async getRealTimePricing(location, tripDetails) {
@@ -237,13 +67,14 @@ class RealTimeAnalyzer {
         totalEstimate: 0
       };
 
-      // Scrape hotel pricing
-      const hotels = await this.scrapeGoogleHotels(location, tripDetails.checkIn, tripDetails.checkOut);
+      // Use Google Places data for hotel pricing approximation
+      const locData = await this.placesService.getLocationData(location);
+      const hotels = locData?.hotels || [];
       pricing.hotels = hotels.map(hotel => ({
         name: hotel.name,
-        pricePerNight: this.extractPrice(hotel.price),
+        pricePerNight: hotel.price_level ? hotel.price_level * 25 : undefined,
         rating: hotel.rating,
-        source: hotel.source
+        source: 'Google Places'
       }));
 
       // Calculate average hotel cost
@@ -311,58 +142,62 @@ class RealTimeAnalyzer {
   }
 
   // Comprehensive analysis combining all data sources
-  async generateComprehensiveRecommendations(tripAnalysis) {
+  async generateComprehensiveRecommendations(tripAnalysis, options = {}, locationDataOverride = null) {
     try {
       console.log('Generating comprehensive recommendations for:', tripAnalysis);
       
       // Parallel data fetching
-      const [
-        googleHotels,
-        tripAdvisorData,
-        socialReviews,
-        pricingData
-      ] = await Promise.all([
-        this.scrapeGoogleHotels(tripAnalysis.destination),
-        this.scrapeTripAdvisor(tripAnalysis.destination, 'attractions'),
-        // Disabled: this.scrapeSocialMediaReviews(tripAnalysis.destination, 'Nepal travel'),
-        Promise.resolve([]), // Empty array instead of social media scraping
+      const mode = options.mode || 'fast';
+      const [locationData, pricingData] = await Promise.all([
+        Promise.resolve(locationDataOverride || this.placesService.getLocationData(tripAnalysis.destination, options)),
         this.getRealTimePricing(tripAnalysis.destination, tripAnalysis)
       ]);
 
       // Use AI to analyze and rank all collected data
-      const model = this.genAI.getGenerativeModel({ model: 'gemini-2.5-pro' });
-      
-      const analysisPrompt = `
-        Based on this real-time data collected from multiple sources, create the best recommendations:
-        
-        Trip Details: ${JSON.stringify(tripAnalysis)}
-        Hotels: ${JSON.stringify(googleHotels.slice(0, 10))}
-        Attractions: ${JSON.stringify(tripAdvisorData.slice(0, 10))}
-        Social Reviews: ${JSON.stringify(socialReviews.slice(0, 5))}
-        Pricing: ${JSON.stringify(pricingData)}
-        
-        Generate a comprehensive recommendation object with:
-        1. Top 5 hotels with real pricing and reviews
-        2. Top 5 restaurants with authentic local recommendations
-        3. Top 5 activities/attractions with current pricing
-        4. 3 recommended travel agencies with contact details
-        5. 3 recommended guides with specializations
-        6. Detailed budget breakdown with real costs
-        7. Day-by-day itinerary with specific recommendations
-        
-        Return as JSON with real, actionable data.
-      `;
+      // Fast mode: return structured, ranked recommendations without LLM
+      if (mode === 'fast') {
+        const byRating = (arr) => (arr || []).slice().sort((a,b) => (b.rating||0) - (a.rating||0));
+        const hotels = byRating(locationData?.hotels).slice(0,5);
+        const restaurants = byRating(locationData?.restaurants).slice(0,5);
+        const activities = byRating(locationData?.attractions).slice(0,5);
+        return {
+          hotels,
+          restaurants,
+          activities,
+          agencies: (locationData?.agencies || []).slice(0,3),
+          budgetBreakdown: pricingData || {},
+          itinerary: this.generateBasicItinerary(tripAnalysis),
+          lastUpdated: new Date().toISOString(),
+          dataSource: 'Google Places (fast mode)',
+          confidence: tripAnalysis.confidence || 'high'
+        };
+      }
 
+      // Full mode: Use AI to analyze and rank collected data
+      let model;
+      const candidates = ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash-exp', 'gemini-1.5-flash'];
+      for (const name of candidates) {
+        try { model = this.genAI.getGenerativeModel({ model: name }); break; } catch { continue; }
+      }
+      const analysisPrompt = `Create the best recommendations based only on this data.
+Trip Details: ${JSON.stringify(tripAnalysis)}
+Hotels: ${JSON.stringify((locationData?.hotels || []).slice(0, 10))}
+Restaurants: ${JSON.stringify((locationData?.restaurants || []).slice(0, 10))}
+Attractions: ${JSON.stringify((locationData?.attractions || []).slice(0, 10))}
+Pricing: ${JSON.stringify(pricingData)}
+
+Return JSON with:
+- hotels (top 5), restaurants (top 5), activities (top 5), agencies (3)
+- budgetBreakdown (numbers), itinerary (array), lastUpdated, confidence.
+`;
       const result = await model.generateContent(analysisPrompt);
       let recommendations;
-      
       try {
         recommendations = JSON.parse(result.response.text());
       } catch (parseError) {
-        // If JSON parsing fails, create structured response
         recommendations = this.createFallbackRecommendations(tripAnalysis, {
-          hotels: googleHotels,
-          attractions: tripAdvisorData,
+          hotels: locationData?.hotels || [],
+          attractions: locationData?.attractions || [],
           pricing: pricingData
         });
       }
