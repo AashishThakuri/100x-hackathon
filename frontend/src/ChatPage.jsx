@@ -4,7 +4,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import ReactMarkdown from 'react-markdown';
 import './ChatPageStyles.css';
 
-const genAI = new GoogleGenerativeAI('AIzaSyCgue6RzYRRMr75peOB9aiMKO08-FU3Dzs');
+const genAI = new GoogleGenerativeAI('');
 
 // Module-level lock to prevent React Strict Mode from causing double-sends
 let isInitialMessageProcessing = false;
