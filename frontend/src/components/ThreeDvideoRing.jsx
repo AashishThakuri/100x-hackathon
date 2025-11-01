@@ -1,5 +1,54 @@
-import React, { useEffect, useRef, useState, useMemo } from "react";
+import React, { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { motion, AnimatePresence, useMotionValue, easeOut, animate } from "framer-motion";
+
+// Optimized Video Component
+const VideoElement = React.memo(({ src, index, preloadedVideo, isLoaded }) => {
+  const videoRef = useRef(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+
+  useEffect(() => {
+    if (preloadedVideo && videoRef.current) {
+      // Clone the preloaded video element
+      const currentVideo = videoRef.current;
+      currentVideo.src = preloadedVideo.src;
+      currentVideo.currentTime = preloadedVideo.currentTime;
+      
+      // Start playing immediately if preloaded
+      if (isLoaded) {
+        currentVideo.play().catch(console.warn);
+        setIsPlaying(true);
+      }
+    }
+  }, [preloadedVideo, isLoaded]);
+
+  const handleVideoLoad = useCallback(() => {
+    if (videoRef.current && !isPlaying) {
+      videoRef.current.play().catch(console.warn);
+      setIsPlaying(true);
+    }
+  }, [isPlaying]);
+
+  return (
+    <video
+      ref={videoRef}
+      src={!preloadedVideo ? src : undefined}
+      autoPlay
+      loop
+      muted
+      playsInline
+      preload="metadata"
+      onCanPlayThrough={handleVideoLoad}
+      style={{
+        width: '100%',
+        height: '100%',
+        objectFit: 'cover',
+        pointerEvents: 'none',
+        opacity: isLoaded ? 1 : 0.7,
+        transition: 'opacity 0.3s ease',
+      }}
+    />
+  );
+});
 
 export function ThreeDImageRing({
   images,
@@ -34,10 +83,57 @@ export function ThreeDImageRing({
 
   const [currentScale, setCurrentScale] = useState(1);
   const [showImages, setShowImages] = useState(false);
+  const [loadedVideos, setLoadedVideos] = useState(new Set());
+  const [preloadedVideos, setPreloadedVideos] = useState(new Map());
 
   const mediaItems = videos || images;
   const isVideo = !!videos;
   const angle = useMemo(() => 360 / mediaItems.length, [mediaItems.length]);
+
+  // Preload videos for smooth playback
+  const preloadVideos = useCallback(async () => {
+    if (!isVideo) return;
+    
+    const videoMap = new Map();
+    const loadPromises = mediaItems.map((videoUrl, index) => {
+      return new Promise((resolve) => {
+        const video = document.createElement('video');
+        video.src = videoUrl;
+        video.preload = 'metadata';
+        video.muted = true;
+        video.playsInline = true;
+        video.loop = true;
+        
+        const handleCanPlay = () => {
+          videoMap.set(index, video);
+          setLoadedVideos(prev => new Set([...prev, index]));
+          resolve();
+        };
+        
+        const handleError = () => {
+          console.warn(`Failed to preload video: ${videoUrl}`);
+          resolve(); // Don't block other videos
+        };
+        
+        video.addEventListener('canplaythrough', handleCanPlay, { once: true });
+        video.addEventListener('error', handleError, { once: true });
+        
+        // Start loading
+        video.load();
+      });
+    });
+    
+    // Load first few videos immediately, then load others
+    await Promise.all(loadPromises.slice(0, 3));
+    setPreloadedVideos(videoMap);
+    
+    // Continue loading remaining videos in background
+    Promise.all(loadPromises.slice(3));
+  }, [mediaItems, isVideo]);
+
+  useEffect(() => {
+    preloadVideos();
+  }, [preloadVideos]);
 
   const getBgPos = (imageIndex, currentRot, scale) => {
     const scaledImageDistance = imageDistance * scale;
@@ -258,18 +354,11 @@ export function ThreeDImageRing({
                 }}
               >
                 {isVideo ? (
-                  <video
+                  <VideoElement
                     src={mediaUrl}
-                    autoPlay
-                    loop
-                    muted
-                    playsInline
-                    style={{
-                      width: '100%',
-                      height: '100%',
-                      objectFit: 'cover',
-                      pointerEvents: 'none',
-                    }}
+                    index={index}
+                    preloadedVideo={preloadedVideos.get(index)}
+                    isLoaded={loadedVideos.has(index)}
                   />
                 ) : (
                   <div

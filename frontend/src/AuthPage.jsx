@@ -1,16 +1,42 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { signInWithPopup } from 'firebase/auth';
+import { signInWithPopup, signInWithRedirect, getRedirectResult } from 'firebase/auth';
 import { auth, googleProvider } from './firebase';
 import './AuthPageStyles.css';
 
 const AuthPage = ({ onClose, onSuccess }) => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  React.useEffect(() => {
+    // Check for redirect result when component mounts
+    const checkRedirectResult = async () => {
+      try {
+        const result = await getRedirectResult(auth);
+        if (result) {
+          const user = result.user;
+          console.log('User signed in via redirect:', user);
+          if (onSuccess) {
+            onSuccess();
+          } else {
+            navigate('/home');
+          }
+        }
+      } catch (error) {
+        console.error('Error with redirect result:', error);
+      }
+    };
+    
+    checkRedirectResult();
+  }, [navigate, onSuccess]);
 
   const handleGoogleSignIn = async () => {
     setLoading(true);
+    setError(null);
+    
     try {
+      // First try popup method
       const result = await signInWithPopup(auth, googleProvider);
       const user = result.user;
       console.log('User signed in:', user);
@@ -22,7 +48,39 @@ const AuthPage = ({ onClose, onSuccess }) => {
       }
     } catch (error) {
       console.error('Error signing in:', error);
-      alert('Failed to sign in. Please try again.');
+      
+      // Handle specific error cases
+      if (error.code === 'auth/internal-error') {
+        setError('Network connection issue. Please check your internet connection and try again.');
+      } else if (error.code === 'auth/network-request-failed') {
+        setError('Network error. Please check your internet connection and try again.');
+      } else if (error.message.includes('Failed to fetch') || error.message.includes('ERR_NAME_NOT_RESOLVED')) {
+        setError('Cannot connect to authentication servers. Please check your internet connection and try again.');
+      } else if (error.code === 'auth/popup-blocked') {
+        setError('Popup was blocked. Please allow popups for this site and try again.');
+        // Try redirect as fallback
+        try {
+          console.log('Trying redirect method as fallback...');
+          await signInWithRedirect(auth, googleProvider);
+          return;
+        } catch (redirectError) {
+          console.error('Redirect also failed:', redirectError);
+          setError('Sign-in failed. Please check your browser settings and try again.');
+        }
+      } else if (error.code === 'auth/popup-closed-by-user') {
+        setError('Sign-in was cancelled. Please try again.');
+      } else if (error.code === 'auth/cancelled-popup-request') {
+        setError('Another sign-in popup is already open. Please complete that first.');
+      } else if (error.message.includes('Cross-Origin-Opener-Policy')) {
+        // Handle COOP policy issues
+        setError('Browser security settings are preventing sign-in. Trying alternative method...');
+        try {
+          await signInWithRedirect(auth, googleProvider);
+          return;
+        } catch (redirectError) {
+          setError('Sign-in failed due to browser security settings. Please try refreshing the page.');
+        }
+      }
     } finally {
       setLoading(false);
     }
@@ -51,6 +109,16 @@ const AuthPage = ({ onClose, onSuccess }) => {
         </div>
 
         <div className="auth-modal-body">
+          {error && (
+            <div className="auth-error-message">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="12" r="10" stroke="#E74C3C" strokeWidth="2"/>
+                <path d="M15 9l-6 6M9 9l6 6" stroke="#E74C3C" strokeWidth="2" strokeLinecap="round"/>
+              </svg>
+              {error}
+            </div>
+          )}
+          
           <button 
             className={`google-signin-btn ${loading ? 'loading' : ''}`}
             onClick={handleGoogleSignIn}
@@ -64,6 +132,17 @@ const AuthPage = ({ onClose, onSuccess }) => {
             </svg>
             {loading ? 'Signing in...' : 'Continue with Google'}
           </button>
+          
+          {error && error.includes('popup') && (
+            <div className="auth-help-text">
+              <p>Having trouble? Try:</p>
+              <ul>
+                <li>Allow popups for this site</li>
+                <li>Disable popup blockers</li>
+                <li>Refresh the page and try again</li>
+              </ul>
+            </div>
+          )}
         </div>
       </div>
     </div>
