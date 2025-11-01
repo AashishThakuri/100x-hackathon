@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 import './DashboardPageStyles.css';
@@ -18,6 +18,36 @@ const DashboardPage = () => {
     }
     setShowProfileMenu(false);
   };
+
+  // Handle click outside to close profile menu
+  const handleClickOutside = useCallback((event) => {
+    if (showProfileMenu && !event.target.closest('.profile-dropdown')) {
+      setShowProfileMenu(false);
+    }
+  }, [showProfileMenu]);
+
+  // Handle escape key to close profile menu
+  const handleKeyDown = useCallback((event) => {
+    if (event.key === 'Escape' && showProfileMenu) {
+      setShowProfileMenu(false);
+    }
+    // Prevent space key from triggering unwanted actions
+    if (event.key === ' ' && event.target === document.body) {
+      event.preventDefault();
+    }
+  }, [showProfileMenu]);
+
+  useEffect(() => {
+    if (showProfileMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener('keydown', handleKeyDown);
+    }
+    
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showProfileMenu, handleClickOutside, handleKeyDown]);
 
   // Mock user data - in real app this would come from backend
   const userData = {

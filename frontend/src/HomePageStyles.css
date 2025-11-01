@@ -163,8 +163,26 @@
   border: 1px solid #E0E0E0;
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  min-width: 120px;
+  min-width: 140px;
   z-index: 1000;
+}
+
+.dashboard-btn {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: #333;
+  text-decoration: none;
+  display: block;
+  transition: background-color 0.2s ease;
+}
+
+.dashboard-btn:hover {
+  background-color: #F5F5F5;
 }
 
 .logout-btn {
