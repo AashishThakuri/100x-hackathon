@@ -1,5 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from './AuthContext';
+import AuthPage from './AuthPage';
 
 const cards = [
   {
@@ -69,12 +71,14 @@ const cards = [
 
 export default function LandingPage() {
   const navigate = useNavigate();
+  const { currentUser } = useAuth();
   const [activeIndex, setActiveIndex] = useState(0);
   const [cardOrder, setCardOrder] = useState([...Array(cards.length).keys()]); // [0,1,2,3,4]
   const [overlayImage, setOverlayImage] = useState(cards[0].image);
   const [baseImage, setBaseImage] = useState(cards[0].image);
   const [clipPath, setClipPath] = useState('inset(0 0 0 0 round 0px)');
   const [animate, setAnimate] = useState(false);
+  const [showAuthModal, setShowAuthModal] = useState(false);
   const cardRefs = useRef([]);
 
   const expandFromCard = (index) => {
@@ -201,6 +205,28 @@ export default function LandingPage() {
     });
   }, []);
 
+  const handlePlanTrip = () => {
+    if (currentUser) {
+      navigate('/home');
+    } else {
+      setShowAuthModal(true);
+    }
+  };
+
+  const handleLogin = () => {
+    if (currentUser) {
+      // If already logged in, go to home
+      navigate('/home');
+    } else {
+      setShowAuthModal(true);
+    }
+  };
+
+  const handleAuthSuccess = () => {
+    setShowAuthModal(false);
+    navigate('/home');
+  };
+
   return (
     <div className="landing">
       <div className="hero-bg">
@@ -214,7 +240,9 @@ export default function LandingPage() {
 
       <div className="top-nav">
         <div className="brand"><span className="nepal">Nepal</span> <span className="connect">Connect</span></div>
-        <button className="login-btn">Login / Sign Up</button>
+        <button className="login-btn" onClick={handleLogin}>
+          {currentUser ? 'Go to Home' : 'Login / Sign Up'}
+        </button>
       </div>
 
       <div className="hero">
@@ -223,7 +251,7 @@ export default function LandingPage() {
           <h1 className="title" dangerouslySetInnerHTML={{ __html: cards[activeIndex].title.replace(/ /g, '<br />') }}></h1>
           <div className="subtitle">{cards[activeIndex].subtitle}</div>
           <div className="site-info">Make Every Journey Unforgettable in Nepal</div>
-          <button className="cta" onClick={() => navigate('/home')}>PLAN YOUR TRIP →</button>
+          <button className="cta" onClick={handlePlanTrip}>PLAN YOUR TRIP →</button>
         </div>
 
         <div className="hero-right">
@@ -272,6 +300,14 @@ export default function LandingPage() {
           </div>
         </div>
       </div>
+
+      {/* Auth Modal */}
+      {showAuthModal && (
+        <AuthPage 
+          onClose={() => setShowAuthModal(false)}
+          onSuccess={handleAuthSuccess}
+        />
+      )}
     </div>
   );
 }

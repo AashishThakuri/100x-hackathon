@@ -25,16 +25,22 @@
 
 .home-brand {
   font-size: 1.5rem;
-  font-weight: 800;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity 0.2s ease;
   letter-spacing: 0.5px;
 }
 
+.home-brand:hover {
+  opacity: 0.8;
+}
+
 .home-brand .nepal {
-  color: #E76F51;
+  color: #B85450;
 }
 
 .home-brand .connect {
-  color: #111111;
+  color: #000000;
 }
 
 .home-nav-links {
@@ -98,6 +104,10 @@
   align-items: center;
 }
 
+.profile-dropdown {
+  position: relative;
+}
+
 .profile-btn {
   width: 40px;
   height: 40px;
@@ -142,6 +152,35 @@
   z-index: 1;
   width: 24px;
   height: 24px;
+}
+
+.profile-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 0.5rem;
+  background: #FFFFFF;
+  border: 1px solid #E0E0E0;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  min-width: 120px;
+  z-index: 1000;
+}
+
+.logout-btn {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: #333;
+  transition: background-color 0.2s ease;
+}
+
+.logout-btn:hover {
+  background-color: #F5F5F5;
 }
 
 /* Hero Section */
