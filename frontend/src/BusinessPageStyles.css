@@ -146,6 +146,7 @@
     z-index: 1000;
 }
 
+.dashboard-btn,
 .logout-btn {
     width: 100%;
     padding: 0.75rem 1rem;
@@ -156,8 +157,11 @@
     font-size: 0.9rem;
     color: #333;
     transition: background-color 0.2s ease;
+    text-decoration: none;
+    display: block;
 }
 
+.dashboard-btn:hover,
 .logout-btn:hover {
     background-color: #F5F5F5;
 }

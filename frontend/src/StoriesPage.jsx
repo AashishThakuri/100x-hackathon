@@ -246,6 +246,9 @@ const StoriesPage = () => {
             </button>
             {showProfileMenu && (
               <div className="profile-menu">
+                <Link to="/dashboard" className="dashboard-btn">
+                  Dashboard
+                </Link>
                 <button onClick={handleLogout} className="logout-btn">
                   Logout
                 </button>
