@@ -1,10 +1,13 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
+import { useAuth } from './AuthContext';
 import ThreeDImageRing from './components/ThreeDvideoRing';
 
 function HomePage() {
   const navigate = useNavigate();
+  const { logout } = useAuth();
   const [searchQuery, setSearchQuery] = useState('');
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -15,6 +18,16 @@ function HomePage() {
 
   const handleVoiceSearch = () => {
     navigate('/chat');
+  };
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+      navigate('/');
+    } catch (error) {
+      console.error('Failed to logout:', error);
+    }
+    setShowProfileMenu(false);
   };
 
   // Video files for the 3D carousel
@@ -42,17 +55,29 @@ function HomePage() {
           <span className="nepal">Nepal</span> <span className="connect">Connect</span>
         </div>
         <div className="home-nav-links">
-          <a href="#stories">Travel Stories</a>
+          <Link to="/home">Homepage</Link>
           <a href="#business">List Your Business</a>
-          <a href="#advertise">Advertise With Us</a>
+          <Link to="/stories">Stories</Link>
         </div>
         <div className="home-nav-profile">
-          <button className="profile-btn">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-              <circle cx="12" cy="8" r="4" stroke="currentColor" strokeWidth="2"/>
-              <path d="M4 20c0-4 3.5-7 8-7s8 3 8 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-            </svg>
-          </button>
+          <div className="profile-dropdown">
+            <button 
+              className="profile-btn"
+              onClick={() => setShowProfileMenu(!showProfileMenu)}
+            >
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="8" r="4" stroke="currentColor" strokeWidth="2"/>
+                <path d="M4 20c0-4 3.5-7 8-7s8 3 8 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              </svg>
+            </button>
+            {showProfileMenu && (
+              <div className="profile-menu">
+                <button onClick={handleLogout} className="logout-btn">
+                  Logout
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </nav>
 
