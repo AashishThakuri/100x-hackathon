@@ -9,6 +9,7 @@ import BookingPage from './BookingPage';
 import StoriesPage from './StoriesPage';
 import BusinessPage from './BusinessPage';
 import AdCreatorPage from './AdCreatorPage';
+import DashboardPage from './DashboardPage';
 import AuthPage from './AuthPage';
 import { AuthProvider } from './AuthContext';
 
@@ -24,6 +25,7 @@ function App() {
           <Route path="/stories" element={<StoriesPage />} />
           <Route path="/business" element={<BusinessPage />} />
           <Route path="/ad-creator" element={<AdCreatorPage />} />
+          <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/auth" element={<AuthPage />} />
         </Routes>
       </Router>

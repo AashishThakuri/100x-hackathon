@@ -35,7 +35,7 @@
 }
 
 .loading-container h2 {
-  color: #2C3E50;
+  color: #B85450;
   margin-bottom: 15px;
   font-size: 24px;
 }
@@ -90,13 +90,13 @@
 }
 
 .booking-header h1 {
-  color: #2C3E50;
+  color: #B85450;
   font-size: 32px;
   margin-bottom: 10px;
 }
 
 .booking-header p {
-  color: #666;
+  color: #8B7355;
   font-size: 16px;
 }
 
@@ -227,7 +227,7 @@
 }
 
 .timeline-title {
-  color: #2C3E50;
+  color: #B85450;
   font-size: 28px;
   margin-bottom: 30px;
   text-align: center;
